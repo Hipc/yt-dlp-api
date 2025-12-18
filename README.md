@@ -67,7 +67,7 @@ Send the API key in:
 - `X-API-Key: <your master key>`
 
 ### Important
-When authentication is enabled, **all endpoints are protected**, including:
+Even if authentication is enabled, the following endpoints will still be accessible without API Key:
 - `/docs`
 - `/redoc`
 - `/openapi.json`
