@@ -1,8 +1,12 @@
 import asyncio
+import contextvars
 import datetime
 import json
+import logging
 import os
 import sqlite3
+import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -18,6 +22,30 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
+from starlette.requests import Request
+
+# ----------------------------
+# Logging setup
+# ----------------------------
+
+_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+
+class RequestIdFilter(logging.Filter):
+    """Attach request_id to all log records for correlation."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_ctx.get()
+        return True
+
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s request_id=%(request_id)s %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("yt-dlp-api")
+logger.addFilter(RequestIdFilter())
 
 
 # ----------------------------
@@ -30,9 +58,7 @@ DEFAULT_MASTER_API_KEY_ENV = "API_MASTER_KEY"
 
 
 def _env_truthy(value: Optional[str], *, default: bool = False) -> bool:
-    """
-    Parse common truthy/falsey strings from environment variables.
-    """
+    """Parse common truthy/falsey strings from environment variables."""
     if value is None:
         return default
     normalized = value.strip().lower()
@@ -61,34 +87,34 @@ class AuthConfig(BaseModel):
         enabled = _env_truthy(os.getenv(DEFAULT_API_KEY_ENABLED_ENV), default=False)
         master_key = os.getenv(DEFAULT_MASTER_API_KEY_ENV)
         header_name = os.getenv("API_KEY_HEADER_NAME", DEFAULT_API_KEY_HEADER_NAME).strip()
-        return cls(enabled=enabled, master_key=master_key, header_name=header_name)
+        cfg = cls(enabled=enabled, master_key=master_key, header_name=header_name)
+        logger.info(
+            "Auth config loaded enabled=%s header_name=%s master_key_set=%s",
+            cfg.enabled,
+            cfg.header_name,
+            bool(cfg.master_key),
+        )
+        return cfg
 
 
 auth_config = AuthConfig.from_env()
-
-# Create a header extractor using the configured header name.
-# auto_error=False so we can return consistent errors ourselves.
 api_key_header = APIKeyHeader(name=auth_config.header_name, auto_error=False)
 
 
 async def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> None:
-    """
-    Global API key dependency.
-    - If auth is disabled, allow requests through.
-    - If enabled, require header match to master key.
-    """
+    """Global API key dependency."""
     if not auth_config.enabled:
         return
 
     if not auth_config.master_key:
+        logger.error("API key auth enabled but master key env var missing env=%s", DEFAULT_MASTER_API_KEY_ENV)
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"API key auth is enabled but {DEFAULT_MASTER_API_KEY_ENV} is not set."
-            ),
+            detail=f"API key auth is enabled but {DEFAULT_MASTER_API_KEY_ENV} is not set.",
         )
 
     if not api_key or api_key != auth_config.master_key:
+        logger.warning("Authentication failed (invalid/missing API key)")
         raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
@@ -102,21 +128,11 @@ SERVER_OUTPUT_ROOT = Path(os.getenv(SERVER_OUTPUT_ROOT_ENV, DEFAULT_SERVER_OUTPU
 
 
 def _is_safe_subdir_name(value: str, *, max_length: int = 80) -> bool:
-    """
-    Validate an API-provided folder label that will become a single subdirectory
-    under SERVER_OUTPUT_ROOT.
-
-    Rules (intentionally strict):
-    - Must not be empty
-    - Must not contain path separators or traversal pieces
-    - Allow only a conservative charset (letters/digits/._-)
-    """
+    """Validate an API-provided folder label (single subdirectory)."""
     if not value:
         return False
     if len(value) > max_length:
         return False
-
-    # Block any separators and traversal attempts.
     if "/" in value or "\\" in value:
         return False
     if value in {".", ".."}:
@@ -129,34 +145,27 @@ def _is_safe_subdir_name(value: str, *, max_length: int = 80) -> bool:
 
 
 def resolve_task_base_dir(client_output_path: str) -> Path:
-    """
-    Convert the client 'output_path' into a server-controlled base directory.
-
-    The client value is treated as a *subdirectory name* within SERVER_OUTPUT_ROOT,
-    not an arbitrary filesystem path.
-    """
+    """Convert client 'output_path' into a server-controlled base directory."""
     label = client_output_path.strip()
-
     if label in {"", ".", "./"}:
         label = "default"
 
     if not _is_safe_subdir_name(label):
+        logger.warning("Rejected unsafe output_path label=%r", label)
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Invalid output_path. Provide a simple folder name (no slashes or '..')."
-            ),
+            detail="Invalid output_path. Provide a simple folder name (no slashes or '..').",
         )
 
     root = SERVER_OUTPUT_ROOT.resolve(strict=False)
     base = (root / label).resolve(strict=False)
 
-    # Containment check to prevent traversal and symlink tricks.
-    # pathlib docs: resolve() canonicalizes and removes '..' segments. [page:0]
     if not base.is_relative_to(root):
+        logger.warning("Rejected output_path outside root label=%r base=%s root=%s", label, base, root)
         raise HTTPException(status_code=400, detail="Invalid output_path (outside server root).")
 
     base.mkdir(parents=True, exist_ok=True)
+    logger.debug("Resolved base output dir label=%r base=%s", label, base)
     return base
 
 
@@ -165,15 +174,11 @@ def resolve_task_base_dir(client_output_path: str) -> Path:
 # ----------------------------
 
 def normalize_string(value: str, max_length: int = 200) -> str:
-    """
-    Trim whitespace, replace unsafe filename characters with underscores,
-    and cap length to keep filenames manageable.
-    """
+    """Trim whitespace, replace unsafe filename characters with underscores, and cap length."""
     value = value.strip()
     unsafe_chars = ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]
     for ch in unsafe_chars:
         value = value.replace(ch, "_")
-
     if len(value) > max_length:
         value = value[: max_length - 3] + "..."
     return value
@@ -198,15 +203,9 @@ class Task(BaseModel):
     id: str
     job_type: JobType
     url: str
-
-    # The client requested output_path; server writes to task_output_path.
     base_output_path: str
     task_output_path: str
-
-    # "format" is used as a stable key for de-duplication; it can be a real yt-dlp format string
-    # or a synthesized string for subtitles/audio settings.
     format: str
-
     status: str
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -214,7 +213,6 @@ class Task(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str
-    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
     output_path: str = "default"
     format: str = "bestvideo+bestaudio/best"
     quiet: bool = False
@@ -222,7 +220,6 @@ class DownloadRequest(BaseModel):
 
 class SubtitlesRequest(BaseModel):
     url: str
-    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
     output_path: str = "default"
     languages: List[str] = Field(default_factory=lambda: ["en", "en.*"])
     write_automatic: bool = True
@@ -233,7 +230,6 @@ class SubtitlesRequest(BaseModel):
 
 class AudioRequest(BaseModel):
     url: str
-    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
     output_path: str = "default"
     audio_format: str = "mp3"
     audio_quality: Optional[str] = None
@@ -252,6 +248,7 @@ class State:
         self._load_tasks()
 
     def _init_db(self) -> None:
+        logger.info("Initializing database db_file=%s", self.db_file)
         conn = sqlite3.connect(self.db_file)
         cur = conn.cursor()
         cur.execute(
@@ -274,6 +271,7 @@ class State:
         conn.close()
 
     def _load_tasks(self) -> None:
+        start = time.monotonic()
         try:
             conn = sqlite3.connect(self.db_file)
             cur = conn.cursor()
@@ -284,7 +282,8 @@ class State:
                 FROM tasks
                 """
             )
-            for row in cur.fetchall():
+            rows = cur.fetchall()
+            for row in rows:
                 (
                     task_id,
                     job_type,
@@ -309,8 +308,9 @@ class State:
                     error=error,
                 )
             conn.close()
-        except Exception as exc:
-            print(f"Error loading tasks from database: {exc}")
+            logger.info("Loaded tasks from database count=%d elapsed_ms=%d", len(rows), int((time.monotonic() - start) * 1000))
+        except Exception:
+            logger.exception("Error loading tasks from database db_file=%s", self.db_file)
 
     def _save_task(self, task: Task) -> None:
         try:
@@ -343,18 +343,17 @@ class State:
             )
             conn.commit()
             conn.close()
-        except Exception as exc:
-            print(f"Error saving task to database: {exc}")
+            logger.debug("Saved task task_id=%s status=%s job_type=%s", task.id, task.status, task.job_type.value)
+        except Exception:
+            logger.exception("Error saving task to database task_id=%s", task.id)
 
     def add_task(self, job_type: JobType, url: str, base_output_path: str, fmt: str) -> str:
         task_id = str(uuid.uuid4())
-
-        # Hardened: base_output_path is interpreted as a safe subdir under SERVER_OUTPUT_ROOT.
         base = resolve_task_base_dir(base_output_path)
         task_dir = (base / task_id).resolve(strict=False)
 
-        # Containment check (defense-in-depth).
         if not task_dir.is_relative_to(base.resolve(strict=False)):
+            logger.error("Task dir containment check failed task_id=%s base=%s task_dir=%s", task_id, base, task_dir)
             raise HTTPException(status_code=400, detail="Invalid task directory resolution.")
 
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -369,6 +368,7 @@ class State:
             status="pending",
         )
         self._save_task(task)
+        logger.info("Created task task_id=%s job_type=%s base=%s fmt=%s url=%s", task_id, job_type.value, base, fmt, url)
         return task_id
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -383,6 +383,7 @@ class State:
     ) -> None:
         task = self.tasks.get(task_id)
         if not task:
+            logger.warning("Attempted to update missing task task_id=%s status=%s", task_id, status)
             return
 
         task.status = status
@@ -392,6 +393,7 @@ class State:
             task.error = error
 
         self._save_task(task)
+        logger.info("Updated task task_id=%s status=%s", task_id, status)
 
     def list_tasks(self) -> List[Task]:
         return list(self.tasks.values())
@@ -408,6 +410,7 @@ class YtDlpService:
     @staticmethod
     def get_info(url: str, quiet: bool = False) -> Dict[str, Any]:
         opts = {"quiet": quiet, "no_warnings": quiet, "skip_download": True}
+        logger.debug("yt-dlp get_info url=%s quiet=%s", url, quiet)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return ydl.sanitize_info(info)
@@ -428,8 +431,12 @@ class YtDlpService:
             "format": fmt,
             "no_abort_on_error": True,
         }
+        logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s", url, output_path, fmt, quiet)
+        start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.info("yt-dlp download_video done url=%s elapsed_ms=%d", url, elapsed_ms)
             return ydl.sanitize_info(info)
 
     @staticmethod
@@ -454,8 +461,19 @@ class YtDlpService:
         if audio_quality is not None:
             ydl_opts["audioquality"] = audio_quality
 
+        logger.info(
+            "yt-dlp download_audio start url=%s output_path=%s audio_format=%s audio_quality=%s quiet=%s",
+            url,
+            output_path,
+            audio_format,
+            audio_quality,
+            quiet,
+        )
+        start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.info("yt-dlp download_audio done url=%s elapsed_ms=%d", url, elapsed_ms)
             return ydl.sanitize_info(info)
 
     @staticmethod
@@ -485,8 +503,21 @@ class YtDlpService:
         if convert_to:
             ydl_opts["convertsubtitles"] = convert_to
 
+        logger.info(
+            "yt-dlp download_subtitles start url=%s output_path=%s languages=%s manual=%s auto=%s convert_to=%s quiet=%s",
+            url,
+            output_path,
+            list(languages),
+            write_manual,
+            write_automatic,
+            convert_to,
+            quiet,
+        )
+        start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.info("yt-dlp download_subtitles done url=%s elapsed_ms=%d", url, elapsed_ms)
             return ydl.sanitize_info(info)
 
 
@@ -497,14 +528,21 @@ service = YtDlpService()
 # Async execution
 # ----------------------------
 
+# Reuse one executor rather than creating a new pool per call. [web:2]
+_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", "4")), thread_name_prefix="yt-dlp-worker")
+
+
 async def run_in_threadpool(func, *args, **kwargs):
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(_EXECUTOR, lambda: func(*args, **kwargs))
 
 
 async def process_task(task_id: str, job_type: JobType, payload: Dict[str, Any]) -> None:
+    logger.info("Process task start task_id=%s job_type=%s", task_id, job_type.value)
+    start = time.monotonic()
     try:
+        state.update_task(task_id, "running")
+
         if job_type == JobType.video:
             result = await run_in_threadpool(service.download_video, **payload)
         elif job_type == JobType.audio:
@@ -515,7 +553,9 @@ async def process_task(task_id: str, job_type: JobType, payload: Dict[str, Any])
             raise ValueError(f"Unsupported job type: {job_type}")
 
         state.update_task(task_id, "completed", result=result)
+        logger.info("Process task completed task_id=%s elapsed_ms=%d", task_id, int((time.monotonic() - start) * 1000))
     except Exception as exc:
+        logger.exception("Process task failed task_id=%s error=%s", task_id, exc)
         state.update_task(task_id, "failed", error=str(exc))
 
 
@@ -526,8 +566,10 @@ async def process_task(task_id: str, job_type: JobType, payload: Dict[str, Any])
 def _require_completed_task(task_id: str) -> Task:
     task = state.get_task(task_id)
     if not task:
+        logger.info("Task not found task_id=%s", task_id)
         raise HTTPException(status_code=404, detail=f"Task with ID {task_id} not found")
     if task.status != "completed":
+        logger.info("Task not completed task_id=%s status=%s", task_id, task.status)
         raise HTTPException(
             status_code=400,
             detail=f"Task is not completed yet. Current status: {task.status}",
@@ -538,9 +580,11 @@ def _require_completed_task(task_id: str) -> Task:
 def list_task_files(task: Task) -> List[Path]:
     task_dir = Path(task.task_output_path)
     if not task_dir.exists():
+        logger.warning("Task output directory missing task_id=%s dir=%s", task.id, task_dir)
         return []
     files = [p for p in task_dir.iterdir() if p.is_file()]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    logger.debug("Listed task files task_id=%s count=%d", task.id, len(files))
     return files
 
 
@@ -548,8 +592,6 @@ def list_task_files(task: Task) -> List[Path]:
 # FastAPI
 # ----------------------------
 
-# Apply the API key dependency globally to all endpoints via dependencies=[...]
-# When auth_config.enabled is False, the dependency becomes a no-op.
 app = FastAPI(
     title="yt-dlp API",
     description="API for downloading videos, audio, and subtitles using yt-dlp",
@@ -557,9 +599,24 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    token = _request_id_ctx.set(request_id)
+    start = time.monotonic()
+    try:
+        logger.info("Request start method=%s path=%s", request.method, request.url.path)
+        response = await call_next(request)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.info("Request end method=%s path=%s status=%d elapsed_ms=%d", request.method, request.url.path, response.status_code, elapsed_ms)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        _request_id_ctx.reset(token)
+
+
 @app.post("/download", response_class=JSONResponse)
 async def api_download_video(request: DownloadRequest):
-    # Resolve client label into canonical server base dir for dedupe consistency.
     base_dir = resolve_task_base_dir(request.output_path)
 
     existing = next(
@@ -574,12 +631,14 @@ async def api_download_video(request: DownloadRequest):
         None,
     )
     if existing:
+        logger.info("Deduped video task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, request.format)
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.video, request.url, request.output_path, request.format)
     task = state.get_task(task_id)
     assert task is not None
 
+    logger.info("Queue video task task_id=%s", task_id)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -612,12 +671,14 @@ async def api_download_audio(request: AudioRequest):
         None,
     )
     if existing:
+        logger.info("Deduped audio task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, fmt_key)
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.audio, request.url, request.output_path, fmt_key)
     task = state.get_task(task_id)
     assert task is not None
 
+    logger.info("Queue audio task task_id=%s", task_id)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -654,12 +715,14 @@ async def api_download_subtitles(request: SubtitlesRequest):
         None,
     )
     if existing:
+        logger.info("Deduped subtitles task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, fmt_key)
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.subtitles, request.url, request.output_path, fmt_key)
     task = state.get_task(task_id)
     assert task is not None
 
+    logger.info("Queue subtitles task task_id=%s", task_id)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -682,6 +745,7 @@ async def api_download_subtitles(request: SubtitlesRequest):
 async def get_task_status(task_id: str):
     task = state.get_task(task_id)
     if not task:
+        logger.info("Task not found task_id=%s", task_id)
         raise HTTPException(status_code=404, detail=f"Task with ID {task_id} not found")
 
     data: Dict[str, Any] = {
@@ -702,22 +766,27 @@ async def get_task_status(task_id: str):
 
 @app.get("/tasks", response_class=JSONResponse)
 async def list_all_tasks():
+    logger.debug("List tasks count=%d", len(state.tasks))
     return {"status": "success", "data": state.list_tasks()}
 
 
 @app.get("/info", response_class=JSONResponse)
 async def api_get_video_info(url: str = Query(..., description="Video URL")):
     try:
+        logger.info("Info request url=%s", url)
         return {"status": "success", "data": service.get_info(url=url, quiet=True)}
     except Exception as exc:
+        logger.exception("Info request failed url=%s error=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/formats", response_class=JSONResponse)
 async def api_list_formats(url: str = Query(..., description="Video URL")):
     try:
+        logger.info("Formats request url=%s", url)
         return {"status": "success", "data": service.list_formats(url)}
     except Exception as exc:
+        logger.exception("Formats request failed url=%s error=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -739,9 +808,11 @@ async def api_task_file(
     task = _require_completed_task(task_id)
     allow = {p.name: p for p in list_task_files(task)}
     if name not in allow:
+        logger.info("File not found task_id=%s name=%s", task_id, name)
         raise HTTPException(status_code=404, detail="File not found for this task")
 
     p = allow[name]
+    logger.info("Serving file task_id=%s name=%s path=%s", task_id, name, p)
     return FileResponse(path=str(p), filename=p.name, media_type="application/octet-stream")
 
 
@@ -750,6 +821,7 @@ async def api_task_zip(task_id: str):
     task = _require_completed_task(task_id)
     files = list_task_files(task)
     if not files:
+        logger.info("No files to zip task_id=%s", task_id)
         raise HTTPException(status_code=404, detail="No files found to zip")
 
     tmp = NamedTemporaryFile(delete=False, suffix=".zip")
@@ -759,10 +831,12 @@ async def api_task_zip(task_id: str):
     def cleanup() -> None:
         try:
             tmp_path.unlink(missing_ok=True)
+            logger.debug("Cleaned up temp zip path=%s", tmp_path)
         except Exception:
-            pass
+            logger.exception("Failed to cleanup temp zip path=%s", tmp_path)
 
     try:
+        logger.info("Creating zip task_id=%s tmp_path=%s file_count=%d", task_id, tmp_path, len(files))
         with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as zf:
             for f in files:
                 zf.write(f, arcname=f.name)
@@ -775,13 +849,15 @@ async def api_task_zip(task_id: str):
         )
     except Exception as exc:
         cleanup()
+        logger.exception("Failed to create zip task_id=%s error=%s", task_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to create zip: {exc}")
 
 
 def start_api() -> None:
+    logger.info("Starting uvicorn host=0.0.0.0 port=8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":
-    print("Starting yt-dlp API server...")
+    logger.info("Starting yt-dlp API server...")
     start_api()

@@ -4,6 +4,13 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "5 20 * * 0"
+  push:
+    branches: [ "main" ]
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - "**/*.py"
+
 
 jobs:
   docker:
