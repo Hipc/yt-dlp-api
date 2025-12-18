@@ -10,7 +10,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout rusthound-ce Repository
+      - name: Checkout yt-dlp-api Repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           repository: zarguell/yt-dlp-api
