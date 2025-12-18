@@ -18,7 +18,7 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
 - Optional API Key authentication (env-controlled)
 
 ## Requirements
-- Python 3.7+
+- Python 3.10+ (3.11+ recommended)
 - FastAPI
 - yt-dlp
 - uvicorn
