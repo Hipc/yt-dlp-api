@@ -192,6 +192,8 @@ POST /subtitles
 }
 ```
 
+Note: As a recommendation, limit languages to only necessary to avoid rate limiting. From my testing, without cookies configured, Google will Rate Limit via 429 after ~2 requests for subtitles.
+
 ### 4. Get Task Status
 **Request:**
 ```
