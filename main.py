@@ -13,10 +13,83 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import uvicorn
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
+
+
+# ----------------------------
+# Auth settings
+# ----------------------------
+
+DEFAULT_API_KEY_HEADER_NAME = "X-API-Key"
+DEFAULT_API_KEY_ENABLED_ENV = "API_KEY_AUTH_ENABLED"
+DEFAULT_MASTER_API_KEY_ENV = "API_MASTER_KEY"
+
+
+def _env_truthy(value: Optional[str], *, default: bool = False) -> bool:
+    """
+    Parse common truthy/falsey strings from environment variables.
+    """
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+class AuthConfig(BaseModel):
+    """
+    Authentication configuration loaded from environment variables.
+
+    - enabled: global kill-switch for API key auth
+    - master_key: master API key value used for authentication
+    - header_name: header used to pass key (default X-API-Key)
+    """
+
+    enabled: bool = Field(default=False)
+    master_key: Optional[str] = Field(default=None)
+    header_name: str = Field(default=DEFAULT_API_KEY_HEADER_NAME)
+
+    @classmethod
+    def from_env(cls) -> "AuthConfig":
+        enabled = _env_truthy(os.getenv(DEFAULT_API_KEY_ENABLED_ENV), default=False)
+        master_key = os.getenv(DEFAULT_MASTER_API_KEY_ENV)
+        header_name = os.getenv("API_KEY_HEADER_NAME", DEFAULT_API_KEY_HEADER_NAME).strip()
+        return cls(enabled=enabled, master_key=master_key, header_name=header_name)
+
+
+auth_config = AuthConfig.from_env()
+
+# Create a header extractor using the configured header name.
+# auto_error=False so we can return consistent errors ourselves.
+api_key_header = APIKeyHeader(name=auth_config.header_name, auto_error=False)
+
+
+async def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> None:
+    """
+    Global API key dependency.
+    - If auth is disabled, allow requests through.
+    - If enabled, require header match to master key.
+    """
+    if not auth_config.enabled:
+        return
+
+    if not auth_config.master_key:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"API key auth is enabled but {DEFAULT_MASTER_API_KEY_ENV} is not set."
+            ),
+        )
+
+    if not api_key or api_key != auth_config.master_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
 # ----------------------------
@@ -29,9 +102,9 @@ def normalize_string(value: str, max_length: int = 200) -> str:
     and cap length to keep filenames manageable.
     """
     value = value.strip()
-    unsafe_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    unsafe_chars = ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]
     for ch in unsafe_chars:
-        value = value.replace(ch, '_')
+        value = value.replace(ch, "_")
 
     if len(value) > max_length:
         value = value[: max_length - 3] + "..."
@@ -142,8 +215,15 @@ class State:
             )
             for row in cur.fetchall():
                 (
-                    task_id, job_type, url, base_output_path, task_output_path,
-                    fmt, status, result_json, error
+                    task_id,
+                    job_type,
+                    url,
+                    base_output_path,
+                    task_output_path,
+                    fmt,
+                    status,
+                    result_json,
+                    error,
                 ) = row
                 result = json.loads(result_json) if result_json else None
                 self.tasks[task_id] = Task(
@@ -371,7 +451,10 @@ def _require_completed_task(task_id: str) -> Task:
     if not task:
         raise HTTPException(status_code=404, detail=f"Task with ID {task_id} not found")
     if task.status != "completed":
-        raise HTTPException(status_code=400, detail=f"Task is not completed yet. Current status: {task.status}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is not completed yet. Current status: {task.status}",
+        )
     return task
 
 
@@ -388,14 +471,21 @@ def list_task_files(task: Task) -> List[Path]:
 # FastAPI
 # ----------------------------
 
-app = FastAPI(title="yt-dlp API", description="API for downloading videos, audio, and subtitles using yt-dlp")
+# Apply the API key dependency globally to all endpoints via dependencies=[...]
+# When auth_config.enabled is False, the dependency becomes a no-op.
+app = FastAPI(
+    title="yt-dlp API",
+    description="API for downloading videos, audio, and subtitles using yt-dlp",
+    dependencies=[Depends(require_api_key)],
+)
 
 
 @app.post("/download", response_class=JSONResponse)
 async def api_download_video(request: DownloadRequest):
     existing = next(
         (
-            t for t in state.tasks.values()
+            t
+            for t in state.tasks.values()
             if t.job_type == JobType.video
             and t.url == request.url
             and t.base_output_path == str(Path(request.output_path))
@@ -430,7 +520,8 @@ async def api_download_audio(request: AudioRequest):
     fmt_key = f"audio:{request.audio_format}:q={request.audio_quality}"
     existing = next(
         (
-            t for t in state.tasks.values()
+            t
+            for t in state.tasks.values()
             if t.job_type == JobType.audio
             and t.url == request.url
             and t.base_output_path == str(Path(request.output_path))
@@ -469,7 +560,8 @@ async def api_download_subtitles(request: SubtitlesRequest):
     )
     existing = next(
         (
-            t for t in state.tasks.values()
+            t
+            for t in state.tasks.values()
             if t.job_type == JobType.subtitles
             and t.url == request.url
             and t.base_output_path == str(Path(request.output_path))
@@ -599,7 +691,7 @@ async def api_task_zip(task_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to create zip: {exc}")
 
 
-def start_api():
+def start_api() -> None:
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
