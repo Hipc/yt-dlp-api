@@ -1,8 +1,8 @@
 # ---- ffmpeg stage (static, multi-arch) ----
-FROM wader/static-ffmpeg:8.0.1 AS ffmpeg
+FROM docker.io/mwader/static-ffmpeg:8.0.1 AS ffmpeg
 
 # ---- builder stage (python deps) ----
-FROM python:3.13-slim-bookworm AS builder
+FROM docker.io/python:3.13-slim-bookworm AS builder
 WORKDIR /app
 
 RUN python -m venv /opt/venv
