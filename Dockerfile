@@ -1,5 +1,5 @@
 # ---- ffmpeg stage (static, multi-arch) ----
-FROM ghcr.io/wader/static-ffmpeg:8.0.1 AS ffmpeg
+FROM wader/static-ffmpeg:8.0.1 AS ffmpeg
 
 # ---- builder stage (python deps) ----
 FROM python:3.13-slim-bookworm AS builder
