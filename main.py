@@ -93,6 +93,74 @@ async def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> 
 
 
 # ----------------------------
+# Output path hardening
+# ----------------------------
+
+SERVER_OUTPUT_ROOT_ENV = "SERVER_OUTPUT_ROOT"
+DEFAULT_SERVER_OUTPUT_ROOT = "./downloads"
+SERVER_OUTPUT_ROOT = Path(os.getenv(SERVER_OUTPUT_ROOT_ENV, DEFAULT_SERVER_OUTPUT_ROOT))
+
+
+def _is_safe_subdir_name(value: str, *, max_length: int = 80) -> bool:
+    """
+    Validate an API-provided folder label that will become a single subdirectory
+    under SERVER_OUTPUT_ROOT.
+
+    Rules (intentionally strict):
+    - Must not be empty
+    - Must not contain path separators or traversal pieces
+    - Allow only a conservative charset (letters/digits/._-)
+    """
+    if not value:
+        return False
+    if len(value) > max_length:
+        return False
+
+    # Block any separators and traversal attempts.
+    if "/" in value or "\\" in value:
+        return False
+    if value in {".", ".."}:
+        return False
+    if ".." in value:
+        return False
+
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    return all(ch in allowed for ch in value)
+
+
+def resolve_task_base_dir(client_output_path: str) -> Path:
+    """
+    Convert the client 'output_path' into a server-controlled base directory.
+
+    The client value is treated as a *subdirectory name* within SERVER_OUTPUT_ROOT,
+    not an arbitrary filesystem path.
+    """
+    label = client_output_path.strip()
+
+    if label in {"", ".", "./"}:
+        label = "default"
+
+    if not _is_safe_subdir_name(label):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid output_path. Provide a simple folder name (no slashes or '..')."
+            ),
+        )
+
+    root = SERVER_OUTPUT_ROOT.resolve(strict=False)
+    base = (root / label).resolve(strict=False)
+
+    # Containment check to prevent traversal and symlink tricks.
+    # pathlib docs: resolve() canonicalizes and removes '..' segments. [page:0]
+    if not base.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="Invalid output_path (outside server root).")
+
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+# ----------------------------
 # Utilities
 # ----------------------------
 
@@ -131,7 +199,7 @@ class Task(BaseModel):
     job_type: JobType
     url: str
 
-    # The client requested base_output_path; server writes to task_output_path.
+    # The client requested output_path; server writes to task_output_path.
     base_output_path: str
     task_output_path: str
 
@@ -146,14 +214,16 @@ class Task(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str
-    output_path: str = "./downloads"
+    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
+    output_path: str = "default"
     format: str = "bestvideo+bestaudio/best"
     quiet: bool = False
 
 
 class SubtitlesRequest(BaseModel):
     url: str
-    output_path: str = "./downloads"
+    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
+    output_path: str = "default"
     languages: List[str] = Field(default_factory=lambda: ["en", "en.*"])
     write_automatic: bool = True
     write_manual: bool = True
@@ -163,7 +233,8 @@ class SubtitlesRequest(BaseModel):
 
 class AudioRequest(BaseModel):
     url: str
-    output_path: str = "./downloads"
+    # NOTE: treated as a relative folder label under SERVER_OUTPUT_ROOT (not an absolute path).
+    output_path: str = "default"
     audio_format: str = "mp3"
     audio_quality: Optional[str] = None
     quiet: bool = False
@@ -278,8 +349,14 @@ class State:
     def add_task(self, job_type: JobType, url: str, base_output_path: str, fmt: str) -> str:
         task_id = str(uuid.uuid4())
 
-        base = Path(base_output_path)
-        task_dir = base / task_id
+        # Hardened: base_output_path is interpreted as a safe subdir under SERVER_OUTPUT_ROOT.
+        base = resolve_task_base_dir(base_output_path)
+        task_dir = (base / task_id).resolve(strict=False)
+
+        # Containment check (defense-in-depth).
+        if not task_dir.is_relative_to(base.resolve(strict=False)):
+            raise HTTPException(status_code=400, detail="Invalid task directory resolution.")
+
         task_dir.mkdir(parents=True, exist_ok=True)
 
         task = Task(
@@ -482,13 +559,16 @@ app = FastAPI(
 
 @app.post("/download", response_class=JSONResponse)
 async def api_download_video(request: DownloadRequest):
+    # Resolve client label into canonical server base dir for dedupe consistency.
+    base_dir = resolve_task_base_dir(request.output_path)
+
     existing = next(
         (
             t
             for t in state.tasks.values()
             if t.job_type == JobType.video
             and t.url == request.url
-            and t.base_output_path == str(Path(request.output_path))
+            and t.base_output_path == str(base_dir)
             and t.format == request.format
         ),
         None,
@@ -518,13 +598,15 @@ async def api_download_video(request: DownloadRequest):
 @app.post("/audio", response_class=JSONResponse)
 async def api_download_audio(request: AudioRequest):
     fmt_key = f"audio:{request.audio_format}:q={request.audio_quality}"
+    base_dir = resolve_task_base_dir(request.output_path)
+
     existing = next(
         (
             t
             for t in state.tasks.values()
             if t.job_type == JobType.audio
             and t.url == request.url
-            and t.base_output_path == str(Path(request.output_path))
+            and t.base_output_path == str(base_dir)
             and t.format == fmt_key
         ),
         None,
@@ -558,13 +640,15 @@ async def api_download_subtitles(request: SubtitlesRequest):
         f"subs:{','.join(request.languages)}:"
         f"manual={request.write_manual}:auto={request.write_automatic}:conv={request.convert_to}"
     )
+    base_dir = resolve_task_base_dir(request.output_path)
+
     existing = next(
         (
             t
             for t in state.tasks.values()
             if t.job_type == JobType.subtitles
             and t.url == request.url
-            and t.base_output_path == str(Path(request.output_path))
+            and t.base_output_path == str(base_dir)
             and t.format == fmt_key
         ),
         None,
@@ -648,7 +732,10 @@ async def api_task_files(task_id: str):
 
 
 @app.get("/task/{task_id}/file", response_class=FileResponse)
-async def api_task_file(task_id: str, name: str = Query(..., description="Exact filename from /task/{task_id}/files")):
+async def api_task_file(
+    task_id: str,
+    name: str = Query(..., description="Exact filename from /task/{task_id}/files"),
+):
     task = _require_completed_task(task_id)
     allow = {p.name: p for p in list_task_files(task)}
     if name not in allow:
