@@ -1,6 +1,6 @@
 # yt-dlp API Service
 
-> **Quick Start:** `docker run -p 8000:8000 zarguell/yt-dlp` to get started instantly!
+> **Quick Start:** `docker run -p 8000:8000 zarguell/yt-dlp-api:latest` to get started instantly!
 
 A RESTful API service built with FastAPI and yt-dlp for video information retrieval and downloading. Refactored the original upstream [https://github.com/Hipc/yt-dlp-api](https://github.com/Hipc/yt-dlp-api) to support subtitle and audio specific endpoints, as well as a generic file operation endpoint to get and retrieve specific files per task.
 
@@ -332,7 +332,7 @@ docker run -p 8000:8000 -v $(pwd)/downloads:/app/downloads yt-dlp-api
 docker run -p 8000:8000 \
   -e API_KEY_AUTH_ENABLED=true \
   -e API_MASTER_KEY="super-secret" \
-  zarguell/yt-dlp
+  zarguell/yt-dlp-api:latest
 ```
 
 ## Important Notes
