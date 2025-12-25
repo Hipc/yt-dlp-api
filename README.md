@@ -29,6 +29,23 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
 
 ## Configuration (env vars)
 
+### Server configuration
+
+#### Host and Port
+- `HOST` (optional)
+  - Host address to bind the uvicorn server to.
+  - Default: `0.0.0.0` (all interfaces)
+- `PORT` (optional)
+  - Port number for the API server.
+  - Default: `8000`
+- `LOG_LEVEL` (optional)
+  - Logging level for the application.
+  - Default: `INFO`
+  - Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+- `MAX_WORKERS` (optional)
+  - Maximum number of worker threads for processing downloads.
+  - Default: `4`
+
 ### Output storage (important)
 To prevent path traversal vulnerabilities, the API does **not** allow clients to write to arbitrary filesystem paths. Instead, the request `output_path` field is treated as a **folder label** (a simple subdirectory name) that is created under a server-controlled root directory. 
 
@@ -296,17 +313,55 @@ The service uses an SQLite database (`tasks.db`) to store task information, incl
 
 ## Docker Support
 
+### Docker configuration environment variables
+
+The Docker image supports additional configuration variables:
+
+#### User configuration
+- `APP_USER` (optional)
+  - Username to run the application process as.
+  - Default: `nonroot`
+- `APP_UID` (optional)
+  - User ID for the application user.
+  - Default: `65532`
+- `APP_GID` (optional)
+  - Group ID for the application user.
+  - Default: `65532`
+
+> **Note:** The container runs as a non-privileged user (UID 65532) by default for security. When mounting volumes, ensure the mounted directory has appropriate permissions for this user, or override the user settings via environment variables.
+
 ### Default Docker run (no env required)
-This works without any extra environment variables because `SERVER_OUTPUT_ROOT` defaults to `./downloads`. 
+This works without any extra environment variables because `SERVER_OUTPUT_ROOT` defaults to `./downloads`.
 ```
 docker run -p 8000:8000 zarguell/yt-dlp-api:latest
 ```
 
+### Custom port and host
+```
+docker run -p 8080:8080 \
+  -e PORT=8080 \
+  -e HOST=0.0.0.0 \
+  zarguell/yt-dlp-api:latest
+```
+
 ### Persist downloads on the host (recommended)
-Mount a host folder to the container’s download root, and (optionally) set `SERVER_OUTPUT_ROOT` to match the mount point. 
+Mount a host folder to the container's download root, and (optionally) set `SERVER_OUTPUT_ROOT` to match the mount point.
+
+> **Important:** The default user (UID 65532) must have write permissions to the mounted directory. You may need to adjust permissions on the host or override the user configuration.
 ```
 docker run -p 8000:8000 \
   -e SERVER_OUTPUT_ROOT=/app/downloads \
+  -v "$(pwd)/downloads:/app/downloads" \
+  zarguell/yt-dlp-api:latest
+```
+
+### Persist downloads with custom user/permissions
+If you need to match a specific host UID/GID:
+```
+docker run -p 8000:8000 \
+  -e APP_UID=1000 \
+  -e APP_GID=1000 \
+  -e APP_USER=myuser \
   -v "$(pwd)/downloads:/app/downloads" \
   zarguell/yt-dlp-api:latest
 ```

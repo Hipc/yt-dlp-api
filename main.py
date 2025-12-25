@@ -854,8 +854,10 @@ async def api_task_zip(task_id: str):
 
 
 def start_api() -> None:
-    logger.info("Starting uvicorn host=0.0.0.0 port=8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    logger.info("Starting uvicorn host=%s port=%s", host, port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

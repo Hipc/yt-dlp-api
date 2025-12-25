@@ -29,5 +29,21 @@ COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 
 ENV PATH="/usr/local/bin:${PATH}"
 
+# Configurable user (defaults to nonroot 65532 used by Chainguard)
+ENV APP_USER=nonroot
+ENV APP_UID=65532
+ENV APP_GID=65532
+
+# Create user and directories with proper permissions
+RUN addgroup -g "${APP_GID}" "${APP_USER}" && \
+    adduser -D -u "${APP_UID}" -G "${APP_USER}" "${APP_USER}" && \
+    chown -R "${APP_USER}:${APP_USER}" /app
+
+# Create and grant permissions to output directory
+RUN mkdir -p /app/downloads && \
+    chown -R "${APP_USER}:${APP_USER}" /app/downloads
+
+USER ${APP_USER}
+
 EXPOSE 8000
 CMD ["python", "main.py"]
