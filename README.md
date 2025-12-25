@@ -84,7 +84,7 @@ Send the API key in:
 - `X-API-Key: <your master key>`
 
 ### Important
-When authentication is enabled, **all endpoints are protected**, including:
+Even if authentication is enabled, the following endpoints will still be accessible without API Key:
 - `/docs`
 - `/redoc`
 - `/openapi.json`
@@ -208,6 +208,8 @@ POST /subtitles
   "task_id": "task_id"
 }
 ```
+
+Note: As a recommendation, limit languages to only necessary to avoid rate limiting. From my testing, without cookies configured, Google will Rate Limit via 429 after ~2 requests for subtitles.
 
 ### 4. Get Task Status
 **Request:**

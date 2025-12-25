@@ -495,6 +495,13 @@ class YtDlpService:
             "skip_download": True,
             "subtitleslangs": list(languages),
             "no_abort_on_error": True,
+
+            # Workaround: avoid WEB player client for extraction
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["default", "-web"],
+                }
+            },
         }
         if write_manual:
             ydl_opts["writesubtitles"] = True
