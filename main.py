@@ -241,8 +241,11 @@ def resolve_cookie_file(request_cookie_file: Optional[str]) -> Optional[str]:
     Resolve the cookie file path from request and environment configuration.
 
     Priority:
-    1. Request-specific cookie_file parameter
-    2. Global COOKIES_FILE environment variable
+    1. Request-specific cookie_file parameter (relative to COOKIES_DIR)
+    2. Global COOKIES_FILE environment variable (absolute or relative to COOKIES_DIR)
+
+    All paths are validated to ensure they remain within the COOKIES_DIR to prevent
+    path traversal attacks.
 
     Returns the absolute path to the cookie file, or None if no cookies are configured.
     """
@@ -253,9 +256,20 @@ def resolve_cookie_file(request_cookie_file: Optional[str]) -> Optional[str]:
 
     cookie_path = Path(cookie_file)
 
-    # If it's a relative path, check if it's in the cookies directory
+    # If it's a relative path, treat it as relative to COOKIES_DIR
     if not cookie_path.is_absolute():
-        cookie_path = COOKIES_DIR / cookie_file
+        cookie_path = (COOKIES_DIR / cookie_file).resolve(strict=False)
+    else:
+        # For absolute paths, just resolve it (we'll validate containment next)
+        cookie_path = cookie_path.resolve(strict=False)
+
+    # Validate the path doesn't escape COOKIES_DIR
+    if not cookie_path.is_relative_to(COOKIES_DIR.resolve(strict=False)):
+        logger.warning("Rejected cookie path outside COOKIES_DIR path=%s", cookie_path)
+        raise HTTPException(
+            status_code=400,
+            detail="Cookie file path must be within the cookies directory",
+        )
 
     # Verify the file exists
     if not cookie_path.is_file():
@@ -698,17 +712,10 @@ class YtDlpService:
             "sleep_subtitles": 10,
         }
 
-        # Add cookies if provided
+        # Add cookies if provided (already validated by resolve_cookie_file)
         if cookie_file:
-            cookie_path = Path(cookie_file)
-            # Check if it's a relative path from cookies directory or absolute
-            if not cookie_path.is_absolute():
-                cookie_path = COOKIES_DIR / cookie_file
-            if cookie_path.is_file():
-                ydl_opts["cookiefile"] = str(cookie_path)
-                logger.info("Using cookies file path=%s", cookie_path)
-            else:
-                logger.warning("Cookies file not found path=%s", cookie_path)
+            ydl_opts["cookiefile"] = cookie_file
+            logger.info("Using cookies file path=%s", cookie_file)
 
         logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s cookie_file=%s", url, output_path, fmt, quiet, cookie_file)
         start = time.monotonic()
@@ -743,17 +750,10 @@ class YtDlpService:
         if audio_quality is not None:
             ydl_opts["audioquality"] = audio_quality
 
-        # Add cookies if provided
+        # Add cookies if provided (already validated by resolve_cookie_file)
         if cookie_file:
-            cookie_path = Path(cookie_file)
-            # Check if it's a relative path from cookies directory or absolute
-            if not cookie_path.is_absolute():
-                cookie_path = COOKIES_DIR / cookie_file
-            if cookie_path.is_file():
-                ydl_opts["cookiefile"] = str(cookie_path)
-                logger.info("Using cookies file path=%s", cookie_path)
-            else:
-                logger.warning("Cookies file not found path=%s", cookie_path)
+            ydl_opts["cookiefile"] = cookie_file
+            logger.info("Using cookies file path=%s", cookie_file)
 
         logger.info(
             "yt-dlp download_audio start url=%s output_path=%s audio_format=%s audio_quality=%s quiet=%s cookie_file=%s",
@@ -818,17 +818,10 @@ class YtDlpService:
         if convert_to:
             ydl_opts["convertsubtitles"] = convert_to
 
-        # Add cookies if provided
+        # Add cookies if provided (already validated by resolve_cookie_file)
         if cookie_file:
-            cookie_path = Path(cookie_file)
-            # Check if it's a relative path from cookies directory or absolute
-            if not cookie_path.is_absolute():
-                cookie_path = COOKIES_DIR / cookie_file
-            if cookie_path.is_file():
-                ydl_opts["cookiefile"] = str(cookie_path)
-                logger.info("Using cookies file path=%s", cookie_path)
-            else:
-                logger.warning("Cookies file not found path=%s", cookie_path)
+            ydl_opts["cookiefile"] = cookie_file
+            logger.info("Using cookies file path=%s", cookie_file)
 
         logger.info(
             "yt-dlp download_subtitles start url=%s output_path=%s languages=%s manual=%s auto=%s convert_to=%s quiet=%s cookie_file=%s",
