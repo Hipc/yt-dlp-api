@@ -309,6 +309,7 @@ def ensure_dir(path: str) -> str:
 class JobType(str, Enum):
     video = "video"
     subtitles = "subtitles"
+    subtitles_v2 = "subtitles_v2"
     audio = "audio"
 
 
@@ -342,6 +343,102 @@ class SubtitlesRequest(BaseModel):
     write_automatic: bool = True
     write_manual: bool = True
     convert_to: str | None = "srt"
+    quiet: bool = False
+    cookie_file: str | None = Field(
+        default=None,
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)",
+    )
+    max_retries: int | None = Field(
+        default=None,
+        ge=0,
+        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)",
+    )
+    retry_backoff: float | None = Field(
+        default=None,
+        ge=0,
+        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)",
+    )
+
+
+class EnglishMode(str, Enum):
+    """Policy for English subtitle selection."""
+
+    best_one = "best_one"  # Pick single best English track
+    all_english = "all_english"  # Download all English variants (en, en-US, en-GB, etc.)
+    explicit = "explicit"  # Use explicit language list from languages field
+
+
+class SubtitlePreference(str, Enum):
+    """Preference for manual vs automatic subtitles."""
+
+    manual_then_auto = "manual_then_auto"  # Prefer manual, fall back to auto
+    auto_only = "auto_only"  # Only automatic captions
+    manual_only = "manual_only"  # Only manual subtitles
+
+
+class SubtitleFormat(str, Enum):
+    """Desired subtitle output format(s)."""
+
+    srt = "srt"  # SRT format only
+    vtt = "vtt"  # WebVTT format only
+    both = "both"  # Both SRT and VTT
+
+
+class SubtitlesV2Request(BaseModel):
+    """Enhanced subtitles request with policy-based selection."""
+
+    url: str
+    output_path: str = "default"
+
+    # Language selection policy
+    english_mode: EnglishMode = Field(
+        default=EnglishMode.best_one,
+        description=(
+            "Policy for English subtitle selection. "
+            "'best_one' picks the single best English track, "
+            "'all_english' downloads all English variants, "
+            "'explicit' uses the languages field directly."
+        ),
+    )
+    languages: list[str] = Field(
+        default_factory=lambda: [],
+        description=(
+            "Explicit language list (only used when english_mode='explicit'). "
+            "Supports regex patterns like 'en.*'."
+        ),
+    )
+
+    # Manual vs automatic preference
+    prefer: SubtitlePreference = Field(
+        default=SubtitlePreference.manual_then_auto,
+        description=(
+            "Preference for manual vs automatic subtitles. "
+            "'manual_then_auto' prefers manual subtitles with automatic fallback, "
+            "'auto_only' uses only automatic captions, "
+            "'manual_only' uses only manual subtitles."
+        ),
+    )
+
+    # Format handling
+    formats: SubtitleFormat = Field(
+        default=SubtitleFormat.srt,
+        description=(
+            "Desired subtitle output format(s). "
+            "'srt' returns SRT only, 'vtt' returns WebVTT only, "
+            "'both' returns both formats."
+        ),
+    )
+
+    # Advanced language ranking for best_one mode
+    english_rank: list[str] = Field(
+        default_factory=lambda: ["en", "en-US", "en-GB", "en.*"],
+        description=(
+            "Ordered ranking of English language tags for 'best_one' mode. "
+            "First available match is selected. Supports regex patterns."
+        ),
+    )
+
+    # Common options
     quiet: bool = False
     cookie_file: str | None = Field(
         default=None,
@@ -970,6 +1067,329 @@ class YtDlpService:
                 "is_retryable": is_429,
             }
 
+    @staticmethod
+    def _select_best_subtitle_language(
+        info: dict[str, Any],
+        english_rank: list[str],
+        prefer: SubtitlePreference,
+    ) -> str | None:
+        """
+        Select the best available subtitle language based on ranking and preference.
+
+        Args:
+            info: Video info dict from yt-dlp (must contain 'subtitles' and 'automatic_captions')
+            english_rank: Ordered list of language patterns (supports regex)
+            prefer: Whether to prefer manual, automatic, or both
+
+        Returns:
+            Selected language tag (e.g., 'en', 'en-US') or None if no match found
+        """
+        import re
+
+        manual_subs = info.get("subtitles", {})
+        auto_subs = info.get("automatic_captions", {})
+
+        # Build available language sets
+        manual_langs = set(manual_subs.keys())
+        auto_langs = set(auto_subs.keys())
+
+        logger.debug(
+            "Available subtitles manual=%s auto=%s",
+            sorted(manual_langs),
+            sorted(auto_langs),
+        )
+
+        # Try each pattern in ranking order
+        for pattern in english_rank:
+            # Check for exact match first (faster)
+            if pattern in manual_langs and prefer != SubtitlePreference.auto_only:
+                logger.info("Selected manual subtitle exact_match=%s", pattern)
+                return pattern
+            if pattern in auto_langs and prefer != SubtitlePreference.manual_only:
+                logger.info("Selected automatic caption exact_match=%s", pattern)
+                return pattern
+
+            # Try regex match
+            regex = re.compile(f"^{re.escape(pattern).replace(r'\*', '.*')}$")
+            manual_matches = [lang for lang in manual_langs if regex.match(lang)]
+            auto_matches = [lang for lang in auto_langs if regex.match(lang)]
+
+            # Prefer manual over auto based on preference
+            if prefer == SubtitlePreference.manual_only:
+                if manual_matches:
+                    selected = manual_matches[0]
+                    logger.info("Selected manual subtitle regex=%s match=%s", pattern, selected)
+                    return selected
+            elif prefer == SubtitlePreference.auto_only:
+                if auto_matches:
+                    selected = auto_matches[0]
+                    logger.info("Selected automatic caption regex=%s match=%s", pattern, selected)
+                    return selected
+            else:  # manual_then_auto
+                if manual_matches:
+                    selected = manual_matches[0]
+                    logger.info("Selected manual subtitle regex=%s match=%s", pattern, selected)
+                    return selected
+                if auto_matches:
+                    selected = auto_matches[0]
+                    logger.info("Selected automatic caption regex=%s match=%s", pattern, selected)
+                    return selected
+
+        logger.warning("No matching subtitle language found for patterns=%s", english_rank)
+        return None
+
+    @staticmethod
+    def _get_all_english_languages(info: dict[str, Any], prefer: SubtitlePreference) -> list[str]:
+        """
+        Get all English language variants available.
+
+        Args:
+            info: Video info dict from yt-dlp
+            prefer: Manual vs automatic preference
+
+        Returns:
+            List of English language tags
+        """
+        import re
+
+        manual_subs = info.get("subtitles", {})
+        auto_subs = info.get("automatic_captions", {})
+
+        # Match English variants (en, en-US, en-GB, etc.)
+        english_regex = re.compile(r"^en(-[A-Z]{2})?$")
+
+        langs = set()
+        if prefer != SubtitlePreference.auto_only:
+            langs.update(lang for lang in manual_subs.keys() if english_regex.match(lang))
+        if prefer != SubtitlePreference.manual_only:
+            langs.update(lang for lang in auto_subs.keys() if english_regex.match(lang))
+
+        return sorted(langs)
+
+    @staticmethod
+    def download_subtitles_v2(
+        url: str,
+        output_path: str,
+        english_mode: EnglishMode,
+        languages: list[str],
+        prefer: SubtitlePreference,
+        formats: SubtitleFormat,
+        english_rank: list[str],
+        quiet: bool,
+        cookie_file: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Enhanced subtitle download with policy-based language selection.
+
+        Algorithm:
+        1. Extract video info to inspect available subtitles
+        2. Select language(s) based on english_mode policy
+        3. Download with optimal yt-dlp options for format preference
+        4. Return downloaded files with metadata
+
+        Returns:
+            Dict with:
+            - 'success': bool
+            - 'downloaded': list of file info dicts
+            - 'selected_languages': list of language tags that were selected
+            - 'info': full video info dict
+            - 'error': error message if failed
+        """
+        # Get video info first
+        logger.info("Extracting video info for subtitle selection url=%s", url)
+        info_opts = {
+            "quiet": quiet,
+            "no_warnings": quiet,
+            "skip_download": True,
+        }
+        if cookie_file:
+            info_opts["cookiefile"] = cookie_file
+
+        try:
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            logger.error("Failed to extract video info error=%s", str(e))
+            return {
+                "success": False,
+                "downloaded": [],
+                "selected_languages": [],
+                "info": None,
+                "error": f"Failed to extract video info: {e}",
+            }
+
+        # Step 2: Select languages based on policy
+        selected_languages: list[str]
+
+        if english_mode == EnglishMode.explicit:
+            if not languages:
+                return {
+                    "success": False,
+                    "downloaded": [],
+                    "selected_languages": [],
+                    "info": ydl.sanitize_info(info),
+                    "error": "english_mode='explicit' requires non-empty languages list",
+                }
+            selected_languages = languages
+            logger.info("Using explicit languages=%s", selected_languages)
+
+        elif english_mode == EnglishMode.best_one:
+            # Select single best language
+            lang = YtDlpService._select_best_subtitle_language(info, english_rank, prefer)
+            if not lang:
+                return {
+                    "success": False,
+                    "downloaded": [],
+                    "selected_languages": [],
+                    "info": ydl.sanitize_info(info),
+                    "error": f"No English subtitles found (prefer={prefer.value}, tried patterns={english_rank})",
+                }
+            selected_languages = [lang]
+            logger.info("Selected best_one language=%s", lang)
+
+        else:  # all_english
+            selected_languages = YtDlpService._get_all_english_languages(info, prefer)
+            if not selected_languages:
+                return {
+                    "success": False,
+                    "downloaded": [],
+                    "selected_languages": [],
+                    "info": ydl.sanitize_info(info),
+                    "error": f"No English subtitles found (prefer={prefer.value})",
+                }
+            logger.info("Selected all_english languages=%s", selected_languages)
+
+        # Step 3: Configure yt-dlp options for format preference
+        ensure_dir(output_path)
+        outtmpl = str(Path(output_path) / "%(title).180s.%(ext)s")
+
+        # Configure format handling
+        if formats == SubtitleFormat.vtt:
+            # Prefer VTT, no conversion
+            subtitles_format = "vtt/best"
+            convert_subtitles = None
+        elif formats == SubtitleFormat.srt:
+            # Prefer SRT, convert if needed
+            subtitles_format = "srt/best"
+            convert_subtitles = "srt"
+        else:  # both
+            # Get VTT as primary, convert to SRT
+            subtitles_format = "vtt/best"
+            convert_subtitles = "srt"
+
+        # Configure manual vs automatic
+        write_manual = prefer != SubtitlePreference.auto_only
+        write_auto = prefer != SubtitlePreference.manual_only
+
+        ydl_opts: dict[str, Any] = {
+            "outtmpl": outtmpl,
+            "quiet": quiet,
+            "no_warnings": quiet,
+            "skip_download": True,
+            "subtitleslangs": selected_languages,
+            "subtitlesformat": subtitles_format,
+            "no_abort_on_error": True,
+            "sleep_interval": 10,
+            "sleep_subtitles": 10,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["default", "-web"],
+                }
+            },
+        }
+
+        if write_manual:
+            ydl_opts["writesubtitles"] = True
+        if write_auto:
+            ydl_opts["writeautomaticsub"] = True
+        if convert_subtitles:
+            ydl_opts["convertsubtitles"] = convert_subtitles
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
+
+        logger.info(
+            "yt-dlp download_subtitles_v2 start url=%s output_path=%s languages=%s format=%s convert=%s manual=%s auto=%s",
+            url,
+            output_path,
+            selected_languages,
+            subtitles_format,
+            convert_subtitles,
+            write_manual,
+            write_auto,
+        )
+
+        # Step 4: Download subtitles
+        start = time.monotonic()
+        output_dir = Path(output_path)
+        files_before = set(output_dir.glob("*")) if output_dir.exists() else set()
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download(url)
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            # Check what files were created
+            files_after = set(output_dir.glob("*")) if output_dir.exists() else set()
+            new_files = files_after - files_before
+
+            downloaded_files = []
+            for f in new_files:
+                if f.is_file():
+                    downloaded_files.append(
+                        {
+                            "name": f.name,
+                            "size_bytes": f.stat().st_size,
+                            "path": str(f),
+                        }
+                    )
+
+            logger.info(
+                "yt-dlp download_subtitles_v2 done url=%s elapsed_ms=%d downloaded=%d files",
+                url,
+                elapsed_ms,
+                len(downloaded_files),
+            )
+
+            return {
+                "success": len(downloaded_files) > 0,
+                "downloaded": downloaded_files,
+                "selected_languages": selected_languages,
+                "info": ydl.sanitize_info(info),
+                "error": None if downloaded_files else "No subtitle files were downloaded",
+            }
+
+        except Exception as e:
+            # Partial success: some files may have been created
+            files_after = set(output_dir.glob("*")) if output_dir.exists() else set()
+            new_files = files_after - files_before
+
+            downloaded_files = []
+            for f in new_files:
+                if f.is_file():
+                    downloaded_files.append(
+                        {
+                            "name": f.name,
+                            "size_bytes": f.stat().st_size,
+                            "path": str(f),
+                        }
+                    )
+
+            error_msg = str(e)
+            logger.warning(
+                "yt-dlp download_subtitles_v2 failed url=%s downloaded_before_error=%d error=%s",
+                url,
+                len(downloaded_files),
+                error_msg[:200],
+            )
+
+            return {
+                "success": False,
+                "downloaded": downloaded_files,
+                "selected_languages": selected_languages,
+                "info": ydl.sanitize_info(info),
+                "error": error_msg,
+            }
+
 
 service = YtDlpService()
 
@@ -1053,6 +1473,20 @@ async def process_task(task_id: str, job_type: JobType, payload: dict[str, Any])
             ):
                 # The retry logic should have handled this, but if we still failed:
                 logger.warning("Subtitle download failed after retries task_id=%s", task_id)
+                state.update_task(task_id, "failed", error=result.get("error", "Unknown error"))
+                return
+        elif job_type == JobType.subtitles_v2:
+            # V2 subtitles: simplified retry handling (no partial mode)
+            result = await run_in_threadpool(
+                retry_with_backoff,
+                service.download_subtitles_v2,
+                retry_config,
+                **payload,
+            )
+
+            # V2 doesn't use partial mode - either success or fail
+            if isinstance(result, dict) and not result.get("success"):
+                logger.warning("Subtitle v2 download failed task_id=%s", task_id)
                 state.update_task(task_id, "failed", error=result.get("error", "Unknown error"))
                 return
         else:
@@ -1275,6 +1709,75 @@ async def api_download_subtitles(request: SubtitlesRequest):
                 "write_manual": request.write_manual,
                 "write_automatic": request.write_automatic,
                 "convert_to": request.convert_to,
+                "quiet": request.quiet,
+                "cookie_file": cookie_file,
+            },
+        )
+    )
+    return {"status": "success", "task_id": task_id}
+
+
+@app.post("/v2/subtitles", response_class=JSONResponse)
+async def api_download_subtitles_v2(request: SubtitlesV2Request):
+    """Enhanced subtitles endpoint with policy-based language selection.
+
+    Features:
+    - Automatic English subtitle selection (best_one, all_english, or explicit)
+    - Manual vs automatic subtitle preference
+    - Format normalization (SRT, VTT, or both)
+    - Intelligent language ranking
+
+    Returns immediately with a task_id for async processing.
+    """
+    # Create dedupe key that includes all policy fields
+    fmt_key = (
+        f"v2subs:{request.english_mode.value}:"
+        f"prefer={request.prefer.value}:"
+        f"fmt={request.formats.value}:"
+        f"rank={','.join(request.english_rank)}:"
+        f"langs={','.join(request.languages)}"
+    )
+    base_dir = resolve_task_base_dir(request.output_path)
+    cookie_file = resolve_cookie_file(request.cookie_file)
+
+    existing = next(
+        (
+            t
+            for t in state.tasks.values()
+            if t.job_type == JobType.subtitles_v2
+            and t.url == request.url
+            and t.base_output_path == str(base_dir)
+            and t.format == fmt_key
+        ),
+        None,
+    )
+    if existing:
+        logger.info(
+            "Deduped subtitles v2 task existing_task_id=%s url=%s base=%s fmt=%s",
+            existing.id,
+            request.url,
+            base_dir,
+            fmt_key,
+        )
+        return {"status": "success", "task_id": existing.id}
+
+    task_id = state.add_task(JobType.subtitles_v2, request.url, request.output_path, fmt_key)
+    task = state.get_task(task_id)
+    assert task is not None
+
+    logger.info("Queue subtitles v2 task task_id=%s cookie_file=%s", task_id, cookie_file)
+    asyncio.create_task(
+        process_task(
+            task_id=task_id,
+            job_type=JobType.subtitles_v2,
+            payload={
+                "url": request.url,
+                "output_path": task.task_output_path,
+                "english_mode": request.english_mode,
+                "languages": request.languages,
+                "prefer": request.prefer,
+                "formats": request.formats,
+                "english_rank": request.english_rank,
                 "quiet": request.quiet,
                 "cookie_file": cookie_file,
             },

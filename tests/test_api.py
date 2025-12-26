@@ -506,6 +506,200 @@ class TestTaskFileEndpoints:
             main.SERVER_OUTPUT_ROOT = original_root
 
 
+class TestSubtitlesV2Endpoints:
+    """Tests for /v2/subtitles endpoint with policy-based selection."""
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_best_one_default(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test v2 subtitles with default best_one mode."""
+        payload = {
+            "url": sample_video_url,
+            "output_path": "subs-v2",
+            # All fields use defaults
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+            assert "task_id" in data
+
+            # Verify the payload was constructed correctly
+            call_args = mock_process.call_args
+            assert call_args is not None
+            assert call_args.kwargs["job_type"] == main.JobType.subtitles_v2
+            payload_dict = call_args.kwargs["payload"]
+            assert payload_dict["english_mode"] == main.EnglishMode.best_one
+            assert payload_dict["prefer"] == main.SubtitlePreference.manual_then_auto
+            assert payload_dict["formats"] == main.SubtitleFormat.srt
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_all_english(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test v2 subtitles with all_english mode."""
+        payload = {
+            "url": sample_video_url,
+            "english_mode": "all_english",
+            "formats": "both",
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+
+            call_args = mock_process.call_args
+            assert call_args.kwargs["payload"]["english_mode"] == main.EnglishMode.all_english
+            assert call_args.kwargs["payload"]["formats"] == main.SubtitleFormat.both
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_explicit_mode(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test v2 subtitles with explicit mode and custom language list."""
+        payload = {
+            "url": sample_video_url,
+            "english_mode": "explicit",
+            "languages": ["es", "fr", "de"],
+            "formats": "vtt",
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+
+            call_args = mock_process.call_args
+            payload_dict = call_args.kwargs["payload"]
+            assert payload_dict["english_mode"] == main.EnglishMode.explicit
+            assert payload_dict["languages"] == ["es", "fr", "de"]
+            assert payload_dict["formats"] == main.SubtitleFormat.vtt
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_auto_only(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test v2 subtitles preferring automatic captions only."""
+        payload = {
+            "url": sample_video_url,
+            "prefer": "auto_only",
+            "formats": "srt",
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+
+            assert response.status_code == 200
+
+            call_args = mock_process.call_args
+            assert call_args.kwargs["payload"]["prefer"] == main.SubtitlePreference.auto_only
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_custom_ranking(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test v2 subtitles with custom language ranking."""
+        payload = {
+            "url": sample_video_url,
+            "english_rank": ["en-GB", "en", "en-US"],
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+
+            assert response.status_code == 200
+
+            call_args = mock_process.call_args
+            assert call_args.kwargs["payload"]["english_rank"] == ["en-GB", "en", "en-US"]
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_deduplication(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test that identical v2 requests are deduplicated."""
+        payload = {
+            "url": sample_video_url,
+            "english_mode": "best_one",
+            "formats": "srt",
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            # First request
+            response1 = await client_with_mock_state.post("/v2/subtitles", json=payload)
+            task_id_1 = response1.json()["task_id"]
+
+            # Second identical request
+            response2 = await client_with_mock_state.post("/v2/subtitles", json=payload)
+            task_id_2 = response2.json()["task_id"]
+
+            # Should return the same task_id
+            assert task_id_1 == task_id_2
+
+            # process_task should only be called once (for first request)
+            assert mock_process.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_different_params_create_new_task(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test that different parameters create different tasks."""
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            # Different formats should create different tasks
+            payload1 = {"url": sample_video_url, "formats": "srt"}
+            response1 = await client_with_mock_state.post("/v2/subtitles", json=payload1)
+            task_id_1 = response1.json()["task_id"]
+
+            payload2 = {"url": sample_video_url, "formats": "vtt"}
+            response2 = await client_with_mock_state.post("/v2/subtitles", json=payload2)
+            task_id_2 = response2.json()["task_id"]
+
+            assert task_id_1 != task_id_2
+            assert mock_process.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_subtitles_v2_explicit_requires_languages(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
+        """Test that explicit mode requires languages to be set (service layer)."""
+        # This test verifies the API accepts the request
+        # The actual validation happens in the service layer during download
+        payload = {
+            "url": sample_video_url,
+            "english_mode": "explicit",
+            # languages is empty by default
+        }
+
+        with patch("main.process_task") as mock_process:
+            mock_process.return_value = None
+
+            # API should accept the request (validation happens during processing)
+            response = await client_with_mock_state.post("/v2/subtitles", json=payload)
+            assert response.status_code == 200
+
+
 class TestAuthentication:
     """Tests for API key authentication."""
 

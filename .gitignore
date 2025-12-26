@@ -53,3 +53,4 @@ dmypy.json
 *.bak
 .cookies/
 cookies/
+cookies.*

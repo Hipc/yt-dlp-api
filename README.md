@@ -9,6 +9,11 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
 - Video download (format selection supported)
 - Audio-only download (extract audio)
 - Subtitles-only download (manual and/or auto captions)
+- Enhanced subtitle download with policy-based language selection
+  - Automatic English subtitle selection (best_one, all_english, or explicit modes)
+  - Manual vs automatic subtitle preference control
+  - Format normalization (SRT, VTT, or both)
+  - Intelligent language ranking with regex support
 - Persistent task status storage (SQLite)
 - Detailed video information queries
 - Generic artifact retrieval:
@@ -351,6 +356,126 @@ POST /subtitles
 
 Note: As a recommendation, limit languages to only necessary to avoid rate limiting. From my testing, without cookies configured, Google will Rate Limit via 429 after ~2 requests for subtitles.
 
+### 3.1. Enhanced Subtitles Download (V2)
+A policy-based subtitle endpoint that automatically selects the best English subtitles without requiring manual language codes.
+
+**Request:**
+```
+POST /v2/subtitles
+```
+
+**Request Body:**
+```json
+{
+  "url": "video_url",
+  "output_path": "default",
+  "english_mode": "best_one",
+  "prefer": "manual_then_auto",
+  "formats": "srt",
+  "english_rank": ["en", "en-US", "en-GB", "en.*"]
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | string | (required) | Video URL |
+| `output_path` | string | `"default"` | Output folder label |
+| `english_mode` | string | `"best_one"` | English selection policy |
+| `languages` | array | `[]` | Explicit language list (only when `english_mode="explicit"`) |
+| `prefer` | string | `"manual_then_auto"` | Manual vs automatic subtitle preference |
+| `formats` | string | `"srt"` | Output format: `srt`, `vtt`, or `both` |
+| `english_rank` | array | `["en", "en-US", "en-GB", "en.*"]` | Language priority order for `best_one` mode |
+| `quiet` | boolean | `false` | Suppress yt-dlp output |
+| `cookie_file` | string | `null` | Cookies file path |
+
+**English Mode Options:**
+
+| Value | Description |
+|-------|-------------|
+| `best_one` | Automatically selects the single best English subtitle track based on `english_rank` preference |
+| `all_english` | Downloads all English variants (en, en-US, en-GB, etc.) |
+| `explicit` | Uses the exact `languages` list provided |
+
+**Subtitle Preference Options:**
+
+| Value | Description |
+|-------|-------------|
+| `manual_then_auto` | Prefer manual subtitles, fall back to automatic captions |
+| `auto_only` | Only download automatic captions |
+| `manual_only` | Only download manual subtitles |
+
+**Format Options:**
+
+| Value | Description |
+|-------|-------------|
+| `srt` | Return SRT format only (converted if necessary) |
+| `vtt` | Return WebVTT format only |
+| `both` | Return both SRT and VTT formats |
+
+**Response:**
+```json
+{
+  "status": "success",
+  "task_id": "task_id"
+}
+```
+
+**Examples:**
+
+*Best English subtitle (automatic):*
+```bash
+curl -X POST http://localhost:8000/v2/subtitles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  }'
+```
+
+*All English variants in both formats:*
+```bash
+curl -X POST http://localhost:8000/v2/subtitles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "english_mode": "all_english",
+    "formats": "both"
+  }'
+```
+
+*Automatic captions only (VTT):*
+```bash
+curl -X POST http://localhost:8000/v2/subtitles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "prefer": "auto_only",
+    "formats": "vtt"
+  }'
+```
+
+*Specific languages with explicit mode:*
+```bash
+curl -X POST http://localhost:8000/v2/subtitles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "english_mode": "explicit",
+    "languages": ["es", "fr", "de"]
+  }'
+```
+
+*Custom language ranking (prefer en-GB):*
+```bash
+curl -X POST http://localhost:8000/v2/subtitles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "english_rank": ["en-GB", "en", "en-US"]
+  }'
+```
+
 ### 4. Get Task Status
 **Request:**
 ```
@@ -363,7 +488,7 @@ GET /task/{task_id}
   "status": "success",
   "data": {
     "id": "task_id",
-    "job_type": "video/audio/subtitles",
+    "job_type": "video/audio/subtitles/subtitles_v2",
     "url": "video_url",
     "status": "pending/completed/failed/partial",
     "base_output_path": "/absolute/or/relative/server/path/to/SERVER_OUTPUT_ROOT/<label>",
@@ -400,7 +525,7 @@ GET /tasks
   "data": [
     {
       "id": "task_id",
-      "job_type": "video/audio/subtitles",
+      "job_type": "video/audio/subtitles/subtitles_v2",
       "url": "video_url",
       "status": "task_status",
       "base_output_path": "/.../SERVER_OUTPUT_ROOT/<label>",
@@ -492,7 +617,7 @@ All API endpoints return appropriate HTTP status codes and detailed error messag
 ## Data Persistence
 The service uses an SQLite database (`tasks.db`) to store task information, including:
 - Task ID
-- Job type (`video`, `audio`, `subtitles`)
+- Job type (`video`, `audio`, `subtitles`, `subtitles_v2`)
 - Video URL
 - Base output path (resolved server base dir: `${SERVER_OUTPUT_ROOT}/{output_path_label}`) 
 - Task output path (actual folder used: `${SERVER_OUTPUT_ROOT}/{output_path_label}/{task_id}`)
