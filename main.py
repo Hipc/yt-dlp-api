@@ -18,7 +18,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import uvicorn
 import yt_dlp
-from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -62,6 +62,9 @@ DEFAULT_MAX_RETRIES_ENV = "DEFAULT_MAX_RETRIES"
 DEFAULT_RETRY_BACKOFF_ENV = "DEFAULT_RETRY_BACKOFF"
 DEFAULT_RETRY_BACKOFF_MULTIPLIER_ENV = "DEFAULT_RETRY_BACKOFF_MULTIPLIER"
 DEFAULT_RETRY_JITTER_ENV = "DEFAULT_RETRY_JITTER"
+
+# Cookie configuration environment variables
+DEFAULT_COOKIES_FILE_ENV = "COOKIES_FILE"
 
 
 def _env_truthy(value: Optional[str], *, default: bool = False) -> bool:
@@ -124,7 +127,32 @@ class AuthConfig(BaseModel):
         return cfg
 
 
+class CookieConfig(BaseModel):
+    """
+    Cookie configuration loaded from environment variables.
+
+    - cookies_file: path to a cookies.txt file to use for all downloads (optional)
+    """
+
+    cookies_file: Optional[str] = Field(default=None)
+
+    @classmethod
+    def from_env(cls) -> "CookieConfig":
+        cookies_file = os.getenv(DEFAULT_COOKIES_FILE_ENV)
+        if cookies_file:
+            cookies_file = cookies_file.strip()
+            # Verify the file exists
+            if not Path(cookies_file).is_file():
+                logger.warning("COOKIES_FILE points to non-existent file=%s", cookies_file)
+                cookies_file = None
+            else:
+                logger.info("Cookie config loaded cookies_file=%s", cookies_file)
+        cfg = cls(cookies_file=cookies_file)
+        return cfg
+
+
 auth_config = AuthConfig.from_env()
+cookie_config = CookieConfig.from_env()
 api_key_header = APIKeyHeader(name=auth_config.header_name, auto_error=False)
 
 # default_retry_config will be initialized after RetryConfig is defined
@@ -154,6 +182,12 @@ async def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> 
 SERVER_OUTPUT_ROOT_ENV = "SERVER_OUTPUT_ROOT"
 DEFAULT_SERVER_OUTPUT_ROOT = "./downloads"
 SERVER_OUTPUT_ROOT = Path(os.getenv(SERVER_OUTPUT_ROOT_ENV, DEFAULT_SERVER_OUTPUT_ROOT))
+
+# Cookie upload directory
+COOKIES_DIR_ENV = "COOKIES_DIR"
+DEFAULT_COOKIES_DIR = "./cookies"
+COOKIES_DIR = Path(os.getenv(COOKIES_DIR_ENV, DEFAULT_COOKIES_DIR))
+COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _is_safe_subdir_name(value: str, *, max_length: int = 80) -> bool:
@@ -202,6 +236,35 @@ def resolve_task_base_dir(client_output_path: str) -> Path:
 # Utilities
 # ----------------------------
 
+def resolve_cookie_file(request_cookie_file: Optional[str]) -> Optional[str]:
+    """
+    Resolve the cookie file path from request and environment configuration.
+
+    Priority:
+    1. Request-specific cookie_file parameter
+    2. Global COOKIES_FILE environment variable
+
+    Returns the absolute path to the cookie file, or None if no cookies are configured.
+    """
+    cookie_file = request_cookie_file or cookie_config.cookies_file
+
+    if not cookie_file:
+        return None
+
+    cookie_path = Path(cookie_file)
+
+    # If it's a relative path, check if it's in the cookies directory
+    if not cookie_path.is_absolute():
+        cookie_path = COOKIES_DIR / cookie_file
+
+    # Verify the file exists
+    if not cookie_path.is_file():
+        logger.warning("Cookie file not found path=%s", cookie_path)
+        return None
+
+    return str(cookie_path)
+
+
 def normalize_string(value: str, max_length: int = 200) -> str:
     """Trim whitespace, replace unsafe filename characters with underscores, and cap length."""
     value = value.strip()
@@ -245,6 +308,10 @@ class DownloadRequest(BaseModel):
     output_path: str = "default"
     format: str = "bestvideo+bestaudio/best"
     quiet: bool = False
+    cookie_file: Optional[str] = Field(
+        default=None,
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+    )
 
 
 class SubtitlesRequest(BaseModel):
@@ -255,6 +322,10 @@ class SubtitlesRequest(BaseModel):
     write_manual: bool = True
     convert_to: Optional[str] = "srt"
     quiet: bool = False
+    cookie_file: Optional[str] = Field(
+        default=None,
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+    )
     max_retries: Optional[int] = Field(
         default=None,
         ge=0,
@@ -273,6 +344,10 @@ class AudioRequest(BaseModel):
     audio_format: str = "mp3"
     audio_quality: Optional[str] = None
     quiet: bool = False
+    cookie_file: Optional[str] = Field(
+        default=None,
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+    )
     max_retries: Optional[int] = Field(
         default=None,
         ge=0,
@@ -604,7 +679,13 @@ class YtDlpService:
         return info.get("formats", []) if info else []
 
     @staticmethod
-    def download_video(url: str, output_path: str, fmt: str, quiet: bool) -> Dict[str, Any]:
+    def download_video(
+        url: str,
+        output_path: str,
+        fmt: str,
+        quiet: bool,
+        cookie_file: Optional[str] = None,
+    ) -> Dict[str, Any]:
         ensure_dir(output_path)
         outtmpl = str(Path(output_path) / "%(title).180s.%(ext)s")
         ydl_opts = {
@@ -616,7 +697,20 @@ class YtDlpService:
             "sleep_interval": 10,
             "sleep_subtitles": 10,
         }
-        logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s", url, output_path, fmt, quiet)
+
+        # Add cookies if provided
+        if cookie_file:
+            cookie_path = Path(cookie_file)
+            # Check if it's a relative path from cookies directory or absolute
+            if not cookie_path.is_absolute():
+                cookie_path = COOKIES_DIR / cookie_file
+            if cookie_path.is_file():
+                ydl_opts["cookiefile"] = str(cookie_path)
+                logger.info("Using cookies file path=%s", cookie_path)
+            else:
+                logger.warning("Cookies file not found path=%s", cookie_path)
+
+        logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s cookie_file=%s", url, output_path, fmt, quiet, cookie_file)
         start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -631,6 +725,7 @@ class YtDlpService:
         audio_format: str,
         audio_quality: Optional[str],
         quiet: bool,
+        cookie_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         ensure_dir(output_path)
         outtmpl = str(Path(output_path) / "%(title).180s.%(ext)s")
@@ -648,13 +743,26 @@ class YtDlpService:
         if audio_quality is not None:
             ydl_opts["audioquality"] = audio_quality
 
+        # Add cookies if provided
+        if cookie_file:
+            cookie_path = Path(cookie_file)
+            # Check if it's a relative path from cookies directory or absolute
+            if not cookie_path.is_absolute():
+                cookie_path = COOKIES_DIR / cookie_file
+            if cookie_path.is_file():
+                ydl_opts["cookiefile"] = str(cookie_path)
+                logger.info("Using cookies file path=%s", cookie_path)
+            else:
+                logger.warning("Cookies file not found path=%s", cookie_path)
+
         logger.info(
-            "yt-dlp download_audio start url=%s output_path=%s audio_format=%s audio_quality=%s quiet=%s",
+            "yt-dlp download_audio start url=%s output_path=%s audio_format=%s audio_quality=%s quiet=%s cookie_file=%s",
             url,
             output_path,
             audio_format,
             audio_quality,
             quiet,
+            cookie_file,
         )
         start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -672,6 +780,7 @@ class YtDlpService:
         write_automatic: bool,
         convert_to: Optional[str],
         quiet: bool,
+        cookie_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Download subtitles with support for partial success tracking.
@@ -709,8 +818,20 @@ class YtDlpService:
         if convert_to:
             ydl_opts["convertsubtitles"] = convert_to
 
+        # Add cookies if provided
+        if cookie_file:
+            cookie_path = Path(cookie_file)
+            # Check if it's a relative path from cookies directory or absolute
+            if not cookie_path.is_absolute():
+                cookie_path = COOKIES_DIR / cookie_file
+            if cookie_path.is_file():
+                ydl_opts["cookiefile"] = str(cookie_path)
+                logger.info("Using cookies file path=%s", cookie_path)
+            else:
+                logger.warning("Cookies file not found path=%s", cookie_path)
+
         logger.info(
-            "yt-dlp download_subtitles start url=%s output_path=%s languages=%s manual=%s auto=%s convert_to=%s quiet=%s",
+            "yt-dlp download_subtitles start url=%s output_path=%s languages=%s manual=%s auto=%s convert_to=%s quiet=%s cookie_file=%s",
             url,
             output_path,
             list(languages),
@@ -718,6 +839,7 @@ class YtDlpService:
             write_automatic,
             convert_to,
             quiet,
+            cookie_file,
         )
         start = time.monotonic()
 
@@ -961,6 +1083,7 @@ async def request_logging_middleware(request: Request, call_next):
 @app.post("/download", response_class=JSONResponse)
 async def api_download_video(request: DownloadRequest):
     base_dir = resolve_task_base_dir(request.output_path)
+    cookie_file = resolve_cookie_file(request.cookie_file)
 
     existing = next(
         (
@@ -981,7 +1104,7 @@ async def api_download_video(request: DownloadRequest):
     task = state.get_task(task_id)
     assert task is not None
 
-    logger.info("Queue video task task_id=%s", task_id)
+    logger.info("Queue video task task_id=%s cookie_file=%s", task_id, cookie_file)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -991,6 +1114,7 @@ async def api_download_video(request: DownloadRequest):
                 "output_path": task.task_output_path,
                 "fmt": request.format,
                 "quiet": request.quiet,
+                "cookie_file": cookie_file,
             },
         )
     )
@@ -1001,6 +1125,7 @@ async def api_download_video(request: DownloadRequest):
 async def api_download_audio(request: AudioRequest):
     fmt_key = f"audio:{request.audio_format}:q={request.audio_quality}"
     base_dir = resolve_task_base_dir(request.output_path)
+    cookie_file = resolve_cookie_file(request.cookie_file)
 
     existing = next(
         (
@@ -1021,7 +1146,7 @@ async def api_download_audio(request: AudioRequest):
     task = state.get_task(task_id)
     assert task is not None
 
-    logger.info("Queue audio task task_id=%s", task_id)
+    logger.info("Queue audio task task_id=%s cookie_file=%s", task_id, cookie_file)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -1032,6 +1157,7 @@ async def api_download_audio(request: AudioRequest):
                 "audio_format": request.audio_format,
                 "audio_quality": request.audio_quality,
                 "quiet": request.quiet,
+                "cookie_file": cookie_file,
             },
         )
     )
@@ -1045,6 +1171,7 @@ async def api_download_subtitles(request: SubtitlesRequest):
         f"manual={request.write_manual}:auto={request.write_automatic}:conv={request.convert_to}"
     )
     base_dir = resolve_task_base_dir(request.output_path)
+    cookie_file = resolve_cookie_file(request.cookie_file)
 
     existing = next(
         (
@@ -1065,7 +1192,7 @@ async def api_download_subtitles(request: SubtitlesRequest):
     task = state.get_task(task_id)
     assert task is not None
 
-    logger.info("Queue subtitles task task_id=%s", task_id)
+    logger.info("Queue subtitles task task_id=%s cookie_file=%s", task_id, cookie_file)
     asyncio.create_task(
         process_task(
             task_id=task_id,
@@ -1078,6 +1205,7 @@ async def api_download_subtitles(request: SubtitlesRequest):
                 "write_automatic": request.write_automatic,
                 "convert_to": request.convert_to,
                 "quiet": request.quiet,
+                "cookie_file": cookie_file,
             },
         )
     )
@@ -1132,6 +1260,53 @@ async def api_list_formats(url: str = Query(..., description="Video URL")):
     except Exception as exc:
         logger.exception("Formats request failed url=%s error=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/cookies/upload", response_class=JSONResponse)
+async def upload_cookies_file(file: UploadFile = File(..., description="cookies.txt file")):
+    """
+    Upload a cookies.txt file for use in downloads.
+
+    The file is stored in the cookies directory and can be referenced by
+    the returned filename in download requests via the cookie_file parameter.
+    """
+    if not file.filename:
+        logger.warning("Cookies upload attempt without filename")
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    # Generate a safe filename
+    safe_filename = f"{uuid.uuid4()}_{normalize_string(file.filename, max_length=50)}"
+    cookie_path = COOKIES_DIR / safe_filename
+
+    try:
+        logger.info("Saving cookies file filename=%s path=%s", file.filename, cookie_path)
+        content = await file.read()
+
+        # Validate it's a text file
+        try:
+            content.decode('utf-8')
+        except UnicodeDecodeError:
+            logger.warning("Cookies file is not valid UTF-8 filename=%s", file.filename)
+            raise HTTPException(status_code=400, detail="cookies.txt must be a valid text file")
+
+        # Write the file
+        with open(cookie_path, 'wb') as f:
+            f.write(content)
+
+        logger.info("Cookies file saved successfully path=%s size_bytes=%d", cookie_path, len(content))
+        return {
+            "status": "success",
+            "data": {
+                "cookie_file": safe_filename,
+                "path": str(cookie_path),
+                "size_bytes": len(content)
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to save cookies file filename=%s error=%s", file.filename, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to save cookies file: {exc}")
 
 
 @app.get("/task/{task_id}/files", response_class=JSONResponse)

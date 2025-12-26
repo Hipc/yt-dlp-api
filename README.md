@@ -17,7 +17,8 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
   - Download a ZIP of all task files
 - Optional API Key authentication (env-controlled)
 - Hardened output directory handling (prevents path traversal by restricting outputs to a server-controlled root)
-- Built-in rate limiting to avoid being blocked by video platforms 
+- Built-in rate limiting to avoid being blocked by video platforms
+- Optional cookie-based authentication for accessing premium/restricted content
 
 ## Requirements
 - Python 3.10+ (3.11+ recommended)
@@ -81,6 +82,106 @@ You can override default retry settings per request:
   "retry_backoff": 10.0
 }
 ```
+
+### Cookie Configuration
+
+The service supports using cookies for authentication, which is useful for accessing premium content, age-restricted videos, or avoiding rate limits. Cookies can be configured globally via environment variables or uploaded per-request.
+
+#### Cookie Environment Variables
+- `COOKIES_FILE` (optional)
+  - Path to a cookies.txt file to use for all downloads by default.
+  - Can be an absolute path or relative to the current working directory.
+  - Default: `None` (no cookies used)
+  - Example: `/path/to/cookies.txt` or `./cookies/cookies.txt`
+
+- `COOKIES_DIR` (optional)
+  - Directory where uploaded cookie files are stored.
+  - Also used as the base directory for relative paths in per-request cookie files.
+  - Default: `./cookies`
+
+#### Using Cookies Globally (Local/Docker)
+
+**Local Python:**
+```bash
+export COOKIES_FILE=/path/to/cookies.txt
+python main.py
+```
+
+**Docker with mounted cookies:**
+```bash
+docker run -p 8000:8000 \
+  -v "$(pwd)/cookies.txt:/app/cookies.txt:ro" \
+  -e COOKIES_FILE=/app/cookies.txt \
+  zarguell/yt-dlp-api:latest
+```
+
+**Docker with cookies directory:**
+```bash
+docker run -p 8000:8000 \
+  -v "$(pwd)/cookies:/app/cookies:ro" \
+  -e COOKIES_FILE=/app/cookies/youtube.txt \
+  zarguell/yt-dlp-api:latest
+```
+
+#### Uploading Cookies Per-Request
+
+You can upload a cookies.txt file via the API and reference it in download requests.
+
+**Step 1: Upload cookies**
+```bash
+curl -X POST http://localhost:8000/cookies/upload \
+  -F "file=@/path/to/cookies.txt"
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "cookie_file": "abc123_cookies.txt",
+    "path": "/app/cookies/abc123_cookies.txt",
+    "size_bytes": 1234
+  }
+}
+```
+
+**Step 2: Use uploaded cookies in download**
+```bash
+curl -X POST http://localhost:8000/download \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=xxx",
+    "cookie_file": "abc123_cookies.txt"
+  }'
+```
+
+#### Cookie Priority
+
+When both global and per-request cookies are configured:
+1. Per-request `cookie_file` parameter takes precedence
+2. If not provided, falls back to `COOKIES_FILE` environment variable
+3. If neither is set, no cookies are used
+
+#### Cookie File Format
+
+The service expects cookies in the standard Netscape cookie format used by browser extensions like "Get cookies.txt LOCALLY" or "ExportThisCookie":
+
+```
+# Netscape HTTP Cookie File
+# This file is compatible with yt-dlp
+
+.youtube.com	TRUE	/	FALSE	1735689700	SID	xxxxxxxxx
+.youtube.com	TRUE	/	FALSE	1735689700	HSID	xxxxxxxxx
+.youtube.com	TRUE	/	TRUE	0	PREF	xxxxxxxxx
+```
+
+#### Tips for Using Cookies
+
+1. **For YouTube**: Use browser extensions to export cookies from your authenticated session
+2. **Regular refresh**: Cookies expire and need to be refreshed periodically
+3. **Security**: Never commit cookies.txt to version control
+4. **Docker mounts**: Use `:ro` (read-only) flag when mounting cookie files for security
+5. **Rate limiting**: Using cookies can help avoid rate limits, especially for subtitles
 
 ### Output storage (important)
 To prevent path traversal vulnerabilities, the API does **not** allow clients to write to arbitrary filesystem paths. Instead, the request `output_path` field is treated as a **folder label** (a simple subdirectory name) that is created under a server-controlled root directory. 
@@ -177,7 +278,8 @@ POST /download
   "url": "video_url",
   "output_path": "default",
   "format": "bestvideo+bestaudio/best",
-  "quiet": false
+  "quiet": false,
+  "cookie_file": "optional_cookies.txt"
 }
 ```
 
@@ -204,7 +306,8 @@ POST /audio
   "output_path": "default",
   "audio_format": "mp3",
   "audio_quality": null,
-  "quiet": false
+  "quiet": false,
+  "cookie_file": "optional_cookies.txt"
 }
 ```
 
@@ -233,7 +336,8 @@ POST /subtitles
   "write_automatic": true,
   "write_manual": true,
   "convert_to": "srt",
-  "quiet": false
+  "quiet": false,
+  "cookie_file": "optional_cookies.txt"
 }
 ```
 
@@ -318,9 +422,45 @@ GET /info?url={video_url}
 GET /formats?url={video_url}
 ```
 
+### 8. Upload Cookies File
+Upload a cookies.txt file for authenticated downloads.
+
+**Request:**
+```
+POST /cookies/upload
+```
+
+**Request (multipart/form-data):**
+```
+file=@/path/to/cookies.txt
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "cookie_file": "uuid_cookies.txt",
+    "path": "/app/cookies/uuid_cookies.txt",
+    "size_bytes": 1234
+  }
+}
+```
+
+**Usage:**
+Use the returned `cookie_file` name in download requests:
+```bash
+curl -X POST http://localhost:8000/download \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=xxx",
+    "cookie_file": "uuid_cookies.txt"
+  }'
+```
+
 ## Generic artifact retrieval (applies to ALL task types)
 
-### 8. List Produced Files for a Task
+### 9. List Produced Files for a Task
 Use this after the task reaches `completed`.
 
 **Request:**
@@ -328,7 +468,7 @@ Use this after the task reaches `completed`.
 GET /task/{task_id}/files
 ```
 
-### 9. Download a Specific File
+### 10. Download a Specific File
 Pick the `name` from `/task/{task_id}/files`.
 
 **Request:**
@@ -336,7 +476,7 @@ Pick the `name` from `/task/{task_id}/files`.
 GET /task/{task_id}/file?name={filename}
 ```
 
-### 10. Download ZIP of All Files for a Task
+### 11. Download ZIP of All Files for a Task
 **Request:**
 ```
 GET /task/{task_id}/zip
