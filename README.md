@@ -47,6 +47,41 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
   - Maximum number of worker threads for processing downloads.
   - Default: `4`
 
+### Retry Configuration
+
+The service includes built-in retry logic with exponential backoff for handling rate limits (HTTP 429) and transient errors. These environment variables set default values that apply to all requests unless overridden.
+
+#### Default Retry Environment Variables
+- `DEFAULT_MAX_RETRIES` (optional)
+  - Maximum number of retry attempts for failed downloads.
+  - Default: `3`
+- `DEFAULT_RETRY_BACKOFF` (optional)
+  - Initial backoff delay in seconds before first retry.
+  - Default: `5.0`
+- `DEFAULT_RETRY_BACKOFF_MULTIPLIER` (optional)
+  - Exponential backoff multiplier (e.g., 2.0 = double the delay each retry).
+  - Default: `2.0`
+- `DEFAULT_RETRY_JITTER` (optional)
+  - Add random jitter to backoff delays to avoid thundering herd problems.
+  - Default: `true`
+  - Valid values: `true`, `false`, `1`, `0`
+
+**How retry works:**
+- On retryable errors (HTTP 429, 500, 502, 503, 504), the service automatically retries
+- Backoff delay = `DEFAULT_RETRY_BACKOFF * (DEFAULT_RETRY_BACKOFF_MULTIPLIER ^ attempt_number)`
+- With defaults: 5s, 10s, 20s delays for retries 1, 2, 3
+- Jitter adds ±25% random variation to avoid synchronized retries
+
+#### Per-Request Override
+You can override default retry settings per request:
+```json
+{
+  "url": "https://www.youtube.com/watch?v=xxx",
+  "max_retries": 5,
+  "retry_backoff": 10.0
+}
+```
+
 ### Output storage (important)
 To prevent path traversal vulnerabilities, the API does **not** allow clients to write to arbitrary filesystem paths. Instead, the request `output_path` field is treated as a **folder label** (a simple subdirectory name) that is created under a server-controlled root directory. 
 
@@ -226,7 +261,7 @@ GET /task/{task_id}
     "id": "task_id",
     "job_type": "video/audio/subtitles",
     "url": "video_url",
-    "status": "pending/completed/failed",
+    "status": "pending/completed/failed/partial",
     "base_output_path": "/absolute/or/relative/server/path/to/SERVER_OUTPUT_ROOT/<label>",
     "task_output_path": "/absolute/or/relative/server/path/to/SERVER_OUTPUT_ROOT/<label>/{task_id}",
     "result": {},
@@ -234,6 +269,19 @@ GET /task/{task_id}
   }
 }
 ```
+
+**Task Statuses:**
+- `pending`: Task is queued and waiting to process
+- `running`: Task is currently processing
+- `completed`: Task finished successfully with all requested content downloaded
+- `partial`: Some content was downloaded but not all (e.g., some subtitles failed due to rate limiting)
+- `failed`: Task failed completely (no content downloaded or non-retryable error)
+
+**Partial Success Handling:**
+For subtitle downloads, if some subtitles download successfully before hitting a rate limit (HTTP 429), the task status will be `partial`. You can still access the downloaded files via the artifact endpoints. The `result` field will include:
+- `downloaded`: List of successfully downloaded files with metadata
+- `failed`: List of errors for failed downloads
+- `partial`: `true` indicating partial success
 
 ### 5. List All Tasks
 **Request:**

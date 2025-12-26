@@ -4,6 +4,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import sqlite3
 import sys
 import time
@@ -12,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import uvicorn
@@ -56,6 +57,12 @@ DEFAULT_API_KEY_HEADER_NAME = "X-API-Key"
 DEFAULT_API_KEY_ENABLED_ENV = "API_KEY_AUTH_ENABLED"
 DEFAULT_MASTER_API_KEY_ENV = "API_MASTER_KEY"
 
+# Retry configuration environment variables
+DEFAULT_MAX_RETRIES_ENV = "DEFAULT_MAX_RETRIES"
+DEFAULT_RETRY_BACKOFF_ENV = "DEFAULT_RETRY_BACKOFF"
+DEFAULT_RETRY_BACKOFF_MULTIPLIER_ENV = "DEFAULT_RETRY_BACKOFF_MULTIPLIER"
+DEFAULT_RETRY_JITTER_ENV = "DEFAULT_RETRY_JITTER"
+
 
 def _env_truthy(value: Optional[str], *, default: bool = False) -> bool:
     """Parse common truthy/falsey strings from environment variables."""
@@ -67,6 +74,26 @@ def _env_truthy(value: Optional[str], *, default: bool = False) -> bool:
     if normalized in {"0", "false", "f", "no", "n", "off"}:
         return False
     return default
+
+
+def _env_int(value: Optional[str], *, default: int) -> int:
+    """Parse integer from environment variable with default."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(value: Optional[str], *, default: float) -> float:
+    """Parse float from environment variable with default."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 class AuthConfig(BaseModel):
@@ -99,6 +126,8 @@ class AuthConfig(BaseModel):
 
 auth_config = AuthConfig.from_env()
 api_key_header = APIKeyHeader(name=auth_config.header_name, auto_error=False)
+
+# default_retry_config will be initialized after RetryConfig is defined
 
 
 async def require_api_key(api_key: Optional[str] = Security(api_key_header)) -> None:
@@ -226,6 +255,16 @@ class SubtitlesRequest(BaseModel):
     write_manual: bool = True
     convert_to: Optional[str] = "srt"
     quiet: bool = False
+    max_retries: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)"
+    )
+    retry_backoff: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)"
+    )
 
 
 class AudioRequest(BaseModel):
@@ -234,6 +273,150 @@ class AudioRequest(BaseModel):
     audio_format: str = "mp3"
     audio_quality: Optional[str] = None
     quiet: bool = False
+    max_retries: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)"
+    )
+    retry_backoff: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)"
+    )
+
+
+class RetryConfig(BaseModel):
+    """Configuration for retry behavior."""
+    max_retries: int = Field(
+        default_factory=lambda: _env_int(os.getenv(DEFAULT_MAX_RETRIES_ENV), default=3),
+        ge=0,
+        description="Maximum number of retry attempts"
+    )
+    backoff_base: float = Field(
+        default_factory=lambda: _env_float(os.getenv(DEFAULT_RETRY_BACKOFF_ENV), default=5.0),
+        ge=0,
+        description="Base backoff delay in seconds"
+    )
+    backoff_multiplier: float = Field(
+        default_factory=lambda: _env_float(os.getenv(DEFAULT_RETRY_BACKOFF_MULTIPLIER_ENV), default=2.0),
+        ge=1.0,
+        description="Exponential backoff multiplier"
+    )
+    jitter: bool = Field(
+        default_factory=lambda: _env_truthy(os.getenv(DEFAULT_RETRY_JITTER_ENV), default=True),
+        description="Add random jitter to backoff to avoid thundering herd"
+    )
+    retryable_http_codes: List[int] = Field(
+        default_factory=lambda: [429, 500, 502, 503, 504],
+        description="HTTP status codes that trigger retry"
+    )
+
+    @classmethod
+    def from_env(cls) -> "RetryConfig":
+        """Create RetryConfig from environment variables."""
+        cfg = cls()
+        logger.info(
+            "Retry config loaded from env max_retries=%s backoff_base=%s backoff_multiplier=%s jitter=%s",
+            cfg.max_retries,
+            cfg.backoff_base,
+            cfg.backoff_multiplier,
+            cfg.jitter,
+        )
+        return cfg
+
+
+# Initialize global retry config from environment
+default_retry_config = RetryConfig.from_env()
+
+
+T = TypeVar("T")
+
+
+# ----------------------------
+# Retry utilities
+# ----------------------------
+
+def is_retryable_error(error: Exception, retry_config: RetryConfig) -> bool:
+    """Check if an error is retryable based on configuration."""
+    error_str = str(error).lower()
+
+    # Check for HTTP error codes
+    for code in retry_config.retryable_http_codes:
+        if f"http error {code}" in error_str or f"httperror: {code}" in error_str:
+            return True
+
+    # Check for common retryable error patterns
+    retryable_patterns = [
+        "too many requests",
+        "rate limit",
+        "temporary failure",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "server error",
+    ]
+
+    return any(pattern in error_str for pattern in retryable_patterns)
+
+
+def calculate_backoff(attempt: int, retry_config: RetryConfig) -> float:
+    """Calculate exponential backoff delay with optional jitter."""
+    base_delay = retry_config.backoff_base
+    multiplier = retry_config.backoff_multiplier
+
+    # Exponential backoff: base * (multiplier ^ attempt)
+    delay = base_delay * (multiplier ** attempt)
+
+    # Add jitter if enabled (±25% random variation)
+    if retry_config.jitter:
+        jitter_range = delay * 0.25
+        delay = delay + random.uniform(-jitter_range, jitter_range)
+
+    return max(0, delay)
+
+
+def retry_with_backoff(
+    func: Callable[..., T],
+    retry_config: RetryConfig,
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Execute a function with retry logic and exponential backoff."""
+    last_error: Optional[Exception] = None
+
+    for attempt in range(retry_config.max_retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            is_last_attempt = attempt >= retry_config.max_retries
+
+            if is_last_attempt or not is_retryable_error(e, retry_config):
+                logger.warning(
+                    "Non-retryable error or max retries exceeded attempt=%d/%d error=%s",
+                    attempt + 1,
+                    retry_config.max_retries + 1,
+                    str(e)[:200],
+                )
+                raise
+
+            # Calculate backoff and wait
+            backoff = calculate_backoff(attempt, retry_config)
+            logger.info(
+                "Retryable error encountered, retrying after backoff attempt=%d/%d backoff_seconds=%.1f error=%s",
+                attempt + 1,
+                retry_config.max_retries + 1,
+                backoff,
+                str(e)[:200],
+            )
+            time.sleep(backoff)
+
+    # This should never be reached, but mypy needs it
+    if last_error:
+        raise last_error
+    raise RuntimeError("Retry logic failed without raising an exception")
+
 
 
 # ----------------------------
@@ -490,6 +673,16 @@ class YtDlpService:
         convert_to: Optional[str],
         quiet: bool,
     ) -> Dict[str, Any]:
+        """
+        Download subtitles with support for partial success tracking.
+
+        Returns a result dictionary with:
+        - 'success': True if all requested subtitles were downloaded
+        - 'downloaded': List of successfully downloaded subtitle files
+        - 'failed': List of subtitle downloads that failed (empty if full success)
+        - 'info': yt-dlp info dict (may be partial if download failed)
+        - 'error': Error message if download failed
+        """
         ensure_dir(output_path)
         outtmpl = str(Path(output_path) / "%(title).180s.%(ext)s")
         ydl_opts: Dict[str, Any] = {
@@ -527,11 +720,97 @@ class YtDlpService:
             quiet,
         )
         start = time.monotonic()
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+
+        # Track files before download
+        output_dir = Path(output_path)
+        files_before = set(output_dir.glob("*")) if output_dir.exists() else set()
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                sanitized_info = ydl.sanitize_info(info)
+
+                # Check what files were actually created
+                files_after = set(output_dir.glob("*")) if output_dir.exists() else set()
+                new_files = files_after - files_before
+
+                # Extract subtitle information from the result
+                subtitles_data = {}
+                if info and "subtitles" in info:
+                    subtitles_data = info["subtitles"]
+                if info and "automatic_captions" in info:
+                    if write_automatic:
+                        subtitles_data.update(info["automatic_captions"])
+
+                # Determine which subtitles were actually downloaded
+                downloaded_files = []
+                for f in new_files:
+                    if f.is_file():
+                        downloaded_files.append({
+                            "name": f.name,
+                            "size_bytes": f.stat().st_size,
+                            "path": str(f),
+                        })
+
+                # Check if we got the expected subtitles
+                # Extract available subtitle languages from info
+                requested_count = len(languages)
+                successful_downloads = len(downloaded_files)
+
+                logger.info(
+                    "yt-dlp download_subtitles done url=%s elapsed_ms=%d downloaded=%d requested=%d",
+                    url,
+                    elapsed_ms,
+                    successful_downloads,
+                    requested_count,
+                )
+
+                return {
+                    "success": successful_downloads > 0,
+                    "downloaded": downloaded_files,
+                    "failed": [] if successful_downloads > 0 else ["All subtitle downloads failed"],
+                    "info": sanitized_info,
+                    "partial": successful_downloads > 0 and successful_downloads < requested_count,
+                }
+
+        except Exception as e:
+            # Partial success: some files may have been created before error
+            files_after = set(output_dir.glob("*")) if output_dir.exists() else set()
+            new_files = files_after - files_before
+
+            downloaded_files = []
+            for f in new_files:
+                if f.is_file():
+                    downloaded_files.append({
+                        "name": f.name,
+                        "size_bytes": f.stat().st_size,
+                        "path": str(f),
+                    })
+
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            logger.info("yt-dlp download_subtitles done url=%s elapsed_ms=%d", url, elapsed_ms)
-            return ydl.sanitize_info(info)
+            error_msg = str(e)
+
+            # Check if it's a retryable error
+            is_429 = "429" in error_msg or "too many requests" in error_msg.lower()
+
+            logger.warning(
+                "yt-dlp download_subtitles failed url=%s elapsed_ms=%d downloaded_before_error=%d error=%s",
+                url,
+                elapsed_ms,
+                len(downloaded_files),
+                error_msg[:200],
+            )
+
+            return {
+                "success": False,
+                "downloaded": downloaded_files,
+                "failed": [error_msg],
+                "info": None,
+                "error": error_msg,
+                "partial": len(downloaded_files) > 0,
+                "is_retryable": is_429,
+            }
 
 
 service = YtDlpService()
@@ -556,12 +835,62 @@ async def process_task(task_id: str, job_type: JobType, payload: Dict[str, Any])
     try:
         state.update_task(task_id, "running")
 
+        # Build retry config: start with global defaults, override with request-specific values
+        retry_config = RetryConfig(
+            max_retries=default_retry_config.max_retries,
+            backoff_base=default_retry_config.backoff_base,
+            backoff_multiplier=default_retry_config.backoff_multiplier,
+            jitter=default_retry_config.jitter,
+        )
+
+        # Override with request-specific values if provided
+        if "max_retries" in payload:
+            retry_config.max_retries = payload.pop("max_retries")
+        if "retry_backoff" in payload:
+            retry_config.backoff_base = payload.pop("retry_backoff")
+
         if job_type == JobType.video:
-            result = await run_in_threadpool(service.download_video, **payload)
+            # Apply retry wrapper for video downloads
+            result = await run_in_threadpool(
+                retry_with_backoff,
+                service.download_video,
+                retry_config,
+                **payload,
+            )
         elif job_type == JobType.audio:
-            result = await run_in_threadpool(service.download_audio, **payload)
+            # Apply retry wrapper for audio downloads
+            result = await run_in_threadpool(
+                retry_with_backoff,
+                service.download_audio,
+                retry_config,
+                **payload,
+            )
         elif job_type == JobType.subtitles:
-            result = await run_in_threadpool(service.download_subtitles, **payload)
+            # For subtitles, handle partial success and retry separately
+            result = await run_in_threadpool(
+                retry_with_backoff,
+                service.download_subtitles,
+                retry_config,
+                **payload,
+            )
+
+            # Check if we got partial success
+            if isinstance(result, dict) and result.get("partial"):
+                logger.info(
+                    "Partial subtitle download success task_id=%s downloaded=%d failed=%d",
+                    task_id,
+                    len(result.get("downloaded", [])),
+                    len(result.get("failed", [])),
+                )
+                state.update_task(task_id, "partial", result=result)
+                return
+
+            # Check if completely failed but retryable
+            if isinstance(result, dict) and not result.get("success") and result.get("is_retryable"):
+                # The retry logic should have handled this, but if we still failed:
+                logger.warning("Subtitle download failed after retries task_id=%s", task_id)
+                state.update_task(task_id, "failed", error=result.get("error", "Unknown error"))
+                return
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -577,11 +906,12 @@ async def process_task(task_id: str, job_type: JobType, payload: Dict[str, Any])
 # ----------------------------
 
 def _require_completed_task(task_id: str) -> Task:
+    """Get a task that has completed (either fully or partially)."""
     task = state.get_task(task_id)
     if not task:
         logger.info("Task not found task_id=%s", task_id)
         raise HTTPException(status_code=404, detail=f"Task with ID {task_id} not found")
-    if task.status != "completed":
+    if task.status not in ("completed", "partial"):
         logger.info("Task not completed task_id=%s status=%s", task_id, task.status)
         raise HTTPException(
             status_code=400,
@@ -769,7 +1099,8 @@ async def get_task_status(task_id: str):
         "base_output_path": task.base_output_path,
         "task_output_path": task.task_output_path,
     }
-    if task.status == "completed" and task.result:
+    # Include result for both completed and partial tasks
+    if task.status in ("completed", "partial") and task.result:
         data["result"] = task.result
     if task.status == "failed" and task.error:
         data["error"] = task.error
