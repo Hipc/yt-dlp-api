@@ -1,5 +1,55 @@
+# Virtual environments
 venv/
+env/
+.venv/
+
+# Downloads
 downloads/
-.DS_Store
+
+# Database
 tasks.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Coverage
+*.cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+.cookies/
+cookies/

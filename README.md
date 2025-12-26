@@ -565,6 +565,71 @@ docker run -p 8000:8000 \
   zarguell/yt-dlp-api:latest
 ```
 
+## Testing
+
+The project includes comprehensive unit and integration tests to ensure code quality and functionality.
+
+### Running Tests
+
+**Quick test run:**
+```bash
+# Install test dependencies
+pip install -r requirements-test.txt
+
+# Run unit tests only (fast)
+make test
+# or
+pytest -m "not slow" -v
+```
+
+**Run tests with coverage:**
+```bash
+make test-cov
+# or
+pytest -v --cov --cov-report=html
+```
+
+**Run all tests:**
+```bash
+make test-all
+# or
+pytest -v
+```
+
+**Using Makefile commands:**
+```bash
+make help           # Show all available commands
+make install-dev    # Install dev dependencies
+make lint           # Run linters
+make format         # Format code
+make test           # Run fast tests
+make test-cov       # Run tests with coverage
+make check          # Run lint + tests
+make clean          # Clean test artifacts
+```
+
+### Test Structure
+
+- `tests/test_utils.py` - Unit tests for utility functions
+- `tests/test_config.py` - Unit tests for configuration classes
+- `tests/test_state.py` - Unit tests for database operations
+- `tests/test_retry.py` - Unit tests for retry logic
+- `tests/test_api.py` - Integration tests for API endpoints (with mocked yt-dlp)
+- `tests/conftest.py` - Shared fixtures and test utilities
+
+### CI/CD
+
+Tests run automatically on:
+- Every push to `main` branch
+- Pull requests to `main` branch
+- Can be triggered manually via workflow dispatch
+
+The CI pipeline includes:
+1. Docker build test
+2. Linting (ruff) and type checking (mypy)
+3. Unit and integration tests with coverage
+4. Multi-Python version testing (3.11, 3.12, 3.13)
+
 ## Important Notes
 1. Ensure sufficient disk space for storing downloaded files.
 2. For production use, add rate limiting.
