@@ -430,6 +430,8 @@ class YtDlpService:
             "no_warnings": quiet,
             "format": fmt,
             "no_abort_on_error": True,
+            "sleep_interval": 10,
+            "sleep_subtitles": 10,
         }
         logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s", url, output_path, fmt, quiet)
         start = time.monotonic()
@@ -457,6 +459,8 @@ class YtDlpService:
             "extractaudio": True,
             "audioformat": audio_format,
             "no_abort_on_error": True,
+            "sleep_interval": 10,
+            "sleep_subtitles": 10,
         }
         if audio_quality is not None:
             ydl_opts["audioquality"] = audio_quality
@@ -495,6 +499,8 @@ class YtDlpService:
             "skip_download": True,
             "subtitleslangs": list(languages),
             "no_abort_on_error": True,
+            "sleep_interval": 10,
+            "sleep_subtitles": 10,
 
             # Workaround: avoid WEB player client for extraction
             "extractor_args": {

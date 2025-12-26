@@ -16,7 +16,8 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
   - Download a specific file
   - Download a ZIP of all task files
 - Optional API Key authentication (env-controlled)
-- Hardened output directory handling (prevents path traversal by restricting outputs to a server-controlled root) 
+- Hardened output directory handling (prevents path traversal by restricting outputs to a server-controlled root)
+- Built-in rate limiting to avoid being blocked by video platforms 
 
 ## Requirements
 - Python 3.10+ (3.11+ recommended)
