@@ -68,6 +68,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # unused imports
+"main.py" = ["B008"]  # function calls in defaults (FastAPI File/Form/Query/Body)
 
 [tool.mypy]
 python_version = "3.13"

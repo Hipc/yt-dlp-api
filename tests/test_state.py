@@ -3,11 +3,8 @@ Unit tests for State (database) class.
 """
 
 import uuid
-from datetime import datetime
 
-import pytest
-
-from main import State, Task, JobType
+from main import JobType, State, Task
 
 
 class TestState:
@@ -15,7 +12,7 @@ class TestState:
 
     def test_init_creates_database(self, temp_db: str) -> None:
         """Test that initialization creates the database file."""
-        state = State(db_file=temp_db)
+        State(db_file=temp_db)
         import pathlib
         assert pathlib.Path(temp_db).exists()
 

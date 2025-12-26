@@ -7,16 +7,15 @@ from pathlib import Path
 import pytest
 
 from main import (
-    _env_truthy,
-    _env_int,
     _env_float,
+    _env_int,
+    _env_truthy,
     _is_safe_subdir_name,
-    resolve_task_base_dir,
-    resolve_cookie_file,
-    normalize_string,
     ensure_dir,
+    normalize_string,
+    resolve_cookie_file,
+    resolve_task_base_dir,
 )
-from main import SERVER_OUTPUT_ROOT_ENV, SERVER_OUTPUT_ROOT, COOKIES_DIR
 
 
 class TestEnvTruthy:

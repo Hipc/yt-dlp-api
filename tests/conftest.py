@@ -5,12 +5,12 @@ Shared fixtures and test utilities.
 import os
 import tempfile
 import uuid
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import AsyncGenerator, Generator
 from unittest.mock import MagicMock
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 # Set test environment variables before importing main
 os.environ.update({
@@ -25,14 +25,14 @@ from main import AuthConfig, CookieConfig, RetryConfig, State
 
 
 @pytest.fixture
-def temp_dir() -> Generator[Path, None, None]:
+def temp_dir() -> Generator[Path]:
     """Provide a temporary directory that is cleaned up after the test."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
 
 
 @pytest.fixture
-def temp_db(temp_dir: Path) -> Generator[str, None, None]:
+def temp_db(temp_dir: Path) -> Generator[str]:
     """Provide a temporary database file."""
     db_path = temp_dir / "test_tasks.db"
     yield str(db_path)
@@ -46,7 +46,7 @@ def test_state(temp_db: str) -> State:
 
 
 @pytest.fixture
-def clean_state() -> Generator[State, None, None]:
+def clean_state() -> Generator[State]:
     """Provide a clean State instance for each test."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -100,7 +100,7 @@ def retry_config() -> RetryConfig:
 
 
 @pytest.fixture
-async def async_client() -> AsyncGenerator[AsyncClient, None]:
+async def async_client() -> AsyncGenerator[AsyncClient]:
     """Provide an async HTTP client for testing the FastAPI app."""
     # Create a fresh app instance for each test
     transport = ASGITransport(app=main.app)
@@ -109,7 +109,7 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture
-def reset_state() -> Generator[None, None, None]:
+def reset_state() -> Generator[None]:
     """Reset the global state between tests."""
     # Save original state
     original_state = main.state
@@ -125,7 +125,7 @@ def reset_state() -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def mock_output_root(temp_dir: Path) -> Generator[Path, None, None]:
+def mock_output_root(temp_dir: Path) -> Generator[Path]:
     """Provide and set a temporary SERVER_OUTPUT_ROOT."""
     original_root = main.SERVER_OUTPUT_ROOT
     test_root = temp_dir / "downloads"

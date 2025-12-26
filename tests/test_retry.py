@@ -3,14 +3,14 @@ Unit tests for retry logic.
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from main import (
     RetryConfig,
-    is_retryable_error,
     calculate_backoff,
+    is_retryable_error,
     retry_with_backoff,
 )
 
@@ -198,7 +198,7 @@ class TestRetryWithBackoff:
         config = RetryConfig(max_retries=3, backoff_base=0.01)
         func = MagicMock(side_effect=Exception("too many requests"))
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="too many requests"):
             retry_with_backoff(func, config)
 
         # Should call initial attempt + 3 retries

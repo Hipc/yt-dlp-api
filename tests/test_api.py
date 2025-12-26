@@ -2,9 +2,9 @@
 Integration tests for API endpoints (with mocked yt-dlp).
 """
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,7 +13,7 @@ import main
 
 
 @pytest.fixture
-async def client_with_mock_state(reset_state) -> AsyncGenerator[AsyncClient, None]:
+async def client_with_mock_state(reset_state) -> AsyncGenerator[AsyncClient]:
     """Provide an async client with fresh state for each test."""
     transport = ASGITransport(app=main.app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -437,9 +437,10 @@ class TestTaskFileEndpoints:
     @pytest.mark.asyncio
     async def test_download_task_zip(self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir) -> None:
         """Test downloading task files as ZIP."""
-        import main
         import zipfile
         from io import BytesIO
+
+        import main
 
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = temp_dir / "downloads"
