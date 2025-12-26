@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import uvicorn
@@ -165,7 +165,9 @@ async def require_api_key(api_key: str | None = Security(api_key_header)) -> Non
         return
 
     if not auth_config.master_key:
-        logger.error("API key auth enabled but master key env var missing env=%s", DEFAULT_MASTER_API_KEY_ENV)
+        logger.error(
+            "API key auth enabled but master key env var missing env=%s", DEFAULT_MASTER_API_KEY_ENV
+        )
         raise HTTPException(
             status_code=500,
             detail=f"API key auth is enabled but {DEFAULT_MASTER_API_KEY_ENV} is not set.",
@@ -225,7 +227,9 @@ def resolve_task_base_dir(client_output_path: str) -> Path:
     base = (root / label).resolve(strict=False)
 
     if not base.is_relative_to(root):
-        logger.warning("Rejected output_path outside root label=%r base=%s root=%s", label, base, root)
+        logger.warning(
+            "Rejected output_path outside root label=%r base=%s root=%s", label, base, root
+        )
         raise HTTPException(status_code=400, detail="Invalid output_path (outside server root).")
 
     base.mkdir(parents=True, exist_ok=True)
@@ -236,6 +240,7 @@ def resolve_task_base_dir(client_output_path: str) -> Path:
 # ----------------------------
 # Utilities
 # ----------------------------
+
 
 def resolve_cookie_file(request_cookie_file: str | None) -> str | None:
     """
@@ -300,6 +305,7 @@ def ensure_dir(path: str) -> str:
 # Domain models
 # ----------------------------
 
+
 class JobType(str, Enum):
     video = "video"
     subtitles = "subtitles"
@@ -325,7 +331,7 @@ class DownloadRequest(BaseModel):
     quiet: bool = False
     cookie_file: str | None = Field(
         default=None,
-        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)",
     )
 
 
@@ -339,17 +345,17 @@ class SubtitlesRequest(BaseModel):
     quiet: bool = False
     cookie_file: str | None = Field(
         default=None,
-        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)",
     )
     max_retries: int | None = Field(
         default=None,
         ge=0,
-        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)"
+        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)",
     )
     retry_backoff: float | None = Field(
         default=None,
         ge=0,
-        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)"
+        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)",
     )
 
 
@@ -361,44 +367,47 @@ class AudioRequest(BaseModel):
     quiet: bool = False
     cookie_file: str | None = Field(
         default=None,
-        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)"
+        description="Path to cookies.txt file for authentication (overrides COOKIES_FILE env var)",
     )
     max_retries: int | None = Field(
         default=None,
         ge=0,
-        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)"
+        description="Maximum number of retry attempts (overrides DEFAULT_MAX_RETRIES env var)",
     )
     retry_backoff: float | None = Field(
         default=None,
         ge=0,
-        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)"
+        description="Initial backoff delay in seconds (overrides DEFAULT_RETRY_BACKOFF env var)",
     )
 
 
 class RetryConfig(BaseModel):
     """Configuration for retry behavior."""
+
     max_retries: int = Field(
         default_factory=lambda: _env_int(os.getenv(DEFAULT_MAX_RETRIES_ENV), default=3),
         ge=0,
-        description="Maximum number of retry attempts"
+        description="Maximum number of retry attempts",
     )
     backoff_base: float = Field(
         default_factory=lambda: _env_float(os.getenv(DEFAULT_RETRY_BACKOFF_ENV), default=5.0),
         ge=0,
-        description="Base backoff delay in seconds"
+        description="Base backoff delay in seconds",
     )
     backoff_multiplier: float = Field(
-        default_factory=lambda: _env_float(os.getenv(DEFAULT_RETRY_BACKOFF_MULTIPLIER_ENV), default=2.0),
+        default_factory=lambda: _env_float(
+            os.getenv(DEFAULT_RETRY_BACKOFF_MULTIPLIER_ENV), default=2.0
+        ),
         ge=1.0,
-        description="Exponential backoff multiplier"
+        description="Exponential backoff multiplier",
     )
     jitter: bool = Field(
         default_factory=lambda: _env_truthy(os.getenv(DEFAULT_RETRY_JITTER_ENV), default=True),
-        description="Add random jitter to backoff to avoid thundering herd"
+        description="Add random jitter to backoff to avoid thundering herd",
     )
     retryable_http_codes: list[int] = Field(
         default_factory=lambda: [429, 500, 502, 503, 504],
-        description="HTTP status codes that trigger retry"
+        description="HTTP status codes that trigger retry",
     )
 
     @classmethod
@@ -425,6 +434,7 @@ T = TypeVar("T")
 # ----------------------------
 # Retry utilities
 # ----------------------------
+
 
 def is_retryable_error(error: Exception, retry_config: RetryConfig) -> bool:
     """Check if an error is retryable based on configuration."""
@@ -456,7 +466,7 @@ def calculate_backoff(attempt: int, retry_config: RetryConfig) -> float:
     multiplier = retry_config.backoff_multiplier
 
     # Exponential backoff: base * (multiplier ^ attempt)
-    delay = base_delay * (multiplier ** attempt)
+    delay = base_delay * (multiplier**attempt)
 
     # Add jitter if enabled (±25% random variation)
     if retry_config.jitter:
@@ -508,10 +518,10 @@ def retry_with_backoff(
     raise RuntimeError("Retry logic failed without raising an exception")
 
 
-
 # ----------------------------
 # Persistence (SQLite)
 # ----------------------------
+
 
 class State:
     def __init__(self, db_file: str = "tasks.db"):
@@ -581,7 +591,11 @@ class State:
                     error=error,
                 )
             conn.close()
-            logger.info("Loaded tasks from database count=%d elapsed_ms=%d", len(rows), int((time.monotonic() - start) * 1000))
+            logger.info(
+                "Loaded tasks from database count=%d elapsed_ms=%d",
+                len(rows),
+                int((time.monotonic() - start) * 1000),
+            )
         except Exception:
             logger.exception("Error loading tasks from database db_file=%s", self.db_file)
 
@@ -616,7 +630,12 @@ class State:
             )
             conn.commit()
             conn.close()
-            logger.debug("Saved task task_id=%s status=%s job_type=%s", task.id, task.status, task.job_type.value)
+            logger.debug(
+                "Saved task task_id=%s status=%s job_type=%s",
+                task.id,
+                task.status,
+                task.job_type.value,
+            )
         except Exception:
             logger.exception("Error saving task to database task_id=%s", task.id)
 
@@ -626,7 +645,12 @@ class State:
         task_dir = (base / task_id).resolve(strict=False)
 
         if not task_dir.is_relative_to(base.resolve(strict=False)):
-            logger.error("Task dir containment check failed task_id=%s base=%s task_dir=%s", task_id, base, task_dir)
+            logger.error(
+                "Task dir containment check failed task_id=%s base=%s task_dir=%s",
+                task_id,
+                base,
+                task_dir,
+            )
             raise HTTPException(status_code=400, detail="Invalid task directory resolution.")
 
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -641,7 +665,14 @@ class State:
             status="pending",
         )
         self._save_task(task)
-        logger.info("Created task task_id=%s job_type=%s base=%s fmt=%s url=%s", task_id, job_type.value, base, fmt, url)
+        logger.info(
+            "Created task task_id=%s job_type=%s base=%s fmt=%s url=%s",
+            task_id,
+            job_type.value,
+            base,
+            fmt,
+            url,
+        )
         return task_id
 
     def get_task(self, task_id: str) -> Task | None:
@@ -679,6 +710,7 @@ state = State()
 # yt-dlp service
 # ----------------------------
 
+
 class YtDlpService:
     @staticmethod
     def get_info(url: str, quiet: bool = False) -> dict[str, Any]:
@@ -686,7 +718,7 @@ class YtDlpService:
         logger.debug("yt-dlp get_info url=%s quiet=%s", url, quiet)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return ydl.sanitize_info(info)
+            return cast("dict[str, Any]", ydl.sanitize_info(info))
 
     @staticmethod
     def list_formats(url: str) -> list[dict[str, Any]]:
@@ -718,13 +750,20 @@ class YtDlpService:
             ydl_opts["cookiefile"] = cookie_file
             logger.info("Using cookies file path=%s", cookie_file)
 
-        logger.info("yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s cookie_file=%s", url, output_path, fmt, quiet, cookie_file)
+        logger.info(
+            "yt-dlp download_video start url=%s output_path=%s fmt=%s quiet=%s cookie_file=%s",
+            url,
+            output_path,
+            fmt,
+            quiet,
+            cookie_file,
+        )
         start = time.monotonic()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             logger.info("yt-dlp download_video done url=%s elapsed_ms=%d", url, elapsed_ms)
-            return ydl.sanitize_info(info)
+            return cast("dict[str, Any]", ydl.sanitize_info(info))
 
     @staticmethod
     def download_audio(
@@ -770,7 +809,7 @@ class YtDlpService:
             info = ydl.extract_info(url, download=True)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             logger.info("yt-dlp download_audio done url=%s elapsed_ms=%d", url, elapsed_ms)
-            return ydl.sanitize_info(info)
+            return cast("dict[str, Any]", ydl.sanitize_info(info))
 
     @staticmethod
     def download_subtitles(
@@ -804,7 +843,6 @@ class YtDlpService:
             "no_abort_on_error": True,
             "sleep_interval": 10,
             "sleep_subtitles": 10,
-
             # Workaround: avoid WEB player client for extraction
             "extractor_args": {
                 "youtube": {
@@ -863,11 +901,13 @@ class YtDlpService:
                 downloaded_files = []
                 for f in new_files:
                     if f.is_file():
-                        downloaded_files.append({
-                            "name": f.name,
-                            "size_bytes": f.stat().st_size,
-                            "path": str(f),
-                        })
+                        downloaded_files.append(
+                            {
+                                "name": f.name,
+                                "size_bytes": f.stat().st_size,
+                                "path": str(f),
+                            }
+                        )
 
                 # Check if we got the expected subtitles
                 # Extract available subtitle languages from info
@@ -898,11 +938,13 @@ class YtDlpService:
             downloaded_files = []
             for f in new_files:
                 if f.is_file():
-                    downloaded_files.append({
-                        "name": f.name,
-                        "size_bytes": f.stat().st_size,
-                        "path": str(f),
-                    })
+                    downloaded_files.append(
+                        {
+                            "name": f.name,
+                            "size_bytes": f.stat().st_size,
+                            "path": str(f),
+                        }
+                    )
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
             error_msg = str(e)
@@ -937,7 +979,9 @@ service = YtDlpService()
 # ----------------------------
 
 # Reuse one executor rather than creating a new pool per call. [web:2]
-_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", "4")), thread_name_prefix="yt-dlp-worker")
+_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("MAX_WORKERS", "4")), thread_name_prefix="yt-dlp-worker"
+)
 
 
 async def run_in_threadpool(func, *args, **kwargs):
@@ -1002,7 +1046,11 @@ async def process_task(task_id: str, job_type: JobType, payload: dict[str, Any])
                 return
 
             # Check if completely failed but retryable
-            if isinstance(result, dict) and not result.get("success") and result.get("is_retryable"):
+            if (
+                isinstance(result, dict)
+                and not result.get("success")
+                and result.get("is_retryable")
+            ):
                 # The retry logic should have handled this, but if we still failed:
                 logger.warning("Subtitle download failed after retries task_id=%s", task_id)
                 state.update_task(task_id, "failed", error=result.get("error", "Unknown error"))
@@ -1011,7 +1059,11 @@ async def process_task(task_id: str, job_type: JobType, payload: dict[str, Any])
             raise ValueError(f"Unsupported job type: {job_type}")
 
         state.update_task(task_id, "completed", result=result)
-        logger.info("Process task completed task_id=%s elapsed_ms=%d", task_id, int((time.monotonic() - start) * 1000))
+        logger.info(
+            "Process task completed task_id=%s elapsed_ms=%d",
+            task_id,
+            int((time.monotonic() - start) * 1000),
+        )
     except Exception as exc:
         logger.exception("Process task failed task_id=%s error=%s", task_id, exc)
         state.update_task(task_id, "failed", error=str(exc))
@@ -1020,6 +1072,7 @@ async def process_task(task_id: str, job_type: JobType, payload: dict[str, Any])
 # ----------------------------
 # File endpoints (generic)
 # ----------------------------
+
 
 def _require_completed_task(task_id: str) -> Task:
     """Get a task that has completed (either fully or partially)."""
@@ -1067,7 +1120,13 @@ async def request_logging_middleware(request: Request, call_next):
         logger.info("Request start method=%s path=%s", request.method, request.url.path)
         response = await call_next(request)
         elapsed_ms = int((time.monotonic() - start) * 1000)
-        logger.info("Request end method=%s path=%s status=%d elapsed_ms=%d", request.method, request.url.path, response.status_code, elapsed_ms)
+        logger.info(
+            "Request end method=%s path=%s status=%d elapsed_ms=%d",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
         response.headers["X-Request-ID"] = request_id
         return response
     finally:
@@ -1091,7 +1150,13 @@ async def api_download_video(request: DownloadRequest):
         None,
     )
     if existing:
-        logger.info("Deduped video task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, request.format)
+        logger.info(
+            "Deduped video task existing_task_id=%s url=%s base=%s fmt=%s",
+            existing.id,
+            request.url,
+            base_dir,
+            request.format,
+        )
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.video, request.url, request.output_path, request.format)
@@ -1133,7 +1198,13 @@ async def api_download_audio(request: AudioRequest):
         None,
     )
     if existing:
-        logger.info("Deduped audio task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, fmt_key)
+        logger.info(
+            "Deduped audio task existing_task_id=%s url=%s base=%s fmt=%s",
+            existing.id,
+            request.url,
+            base_dir,
+            fmt_key,
+        )
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.audio, request.url, request.output_path, fmt_key)
@@ -1179,7 +1250,13 @@ async def api_download_subtitles(request: SubtitlesRequest):
         None,
     )
     if existing:
-        logger.info("Deduped subtitles task existing_task_id=%s url=%s base=%s fmt=%s", existing.id, request.url, base_dir, fmt_key)
+        logger.info(
+            "Deduped subtitles task existing_task_id=%s url=%s base=%s fmt=%s",
+            existing.id,
+            request.url,
+            base_dir,
+            fmt_key,
+        )
         return {"status": "success", "task_id": existing.id}
 
     task_id = state.add_task(JobType.subtitles, request.url, request.output_path, fmt_key)
@@ -1257,7 +1334,9 @@ async def api_list_formats(url: str = Query(..., description="Video URL")):
 
 
 @app.post("/cookies/upload", response_class=JSONResponse)
-async def upload_cookies_file(file: UploadFile = File(..., description="cookies.txt file"),) -> None:
+async def upload_cookies_file(
+    file: UploadFile = File(..., description="cookies.txt file"),
+):
     """
     Upload a cookies.txt file for use in downloads.
 
@@ -1278,23 +1357,27 @@ async def upload_cookies_file(file: UploadFile = File(..., description="cookies.
 
         # Validate it's a text file
         try:
-            content.decode('utf-8')
+            content.decode("utf-8")
         except UnicodeDecodeError as err:
             logger.warning("Cookies file is not valid UTF-8 filename=%s", file.filename)
-            raise HTTPException(status_code=400, detail="cookies.txt must be a valid text file") from err
+            raise HTTPException(
+                status_code=400, detail="cookies.txt must be a valid text file"
+            ) from err
 
         # Write the file
-        with open(cookie_path, 'wb') as f:
+        with open(cookie_path, "wb") as f:
             f.write(content)
 
-        logger.info("Cookies file saved successfully path=%s size_bytes=%d", cookie_path, len(content))
+        logger.info(
+            "Cookies file saved successfully path=%s size_bytes=%d", cookie_path, len(content)
+        )
         return {
             "status": "success",
             "data": {
                 "cookie_file": safe_filename,
                 "path": str(cookie_path),
-                "size_bytes": len(content)
-            }
+                "size_bytes": len(content),
+            },
         }
     except HTTPException:
         raise
@@ -1349,7 +1432,9 @@ async def api_task_zip(task_id: str):
             logger.exception("Failed to cleanup temp zip path=%s", tmp_path)
 
     try:
-        logger.info("Creating zip task_id=%s tmp_path=%s file_count=%d", task_id, tmp_path, len(files))
+        logger.info(
+            "Creating zip task_id=%s tmp_path=%s file_count=%d", task_id, tmp_path, len(files)
+        )
         with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as zf:
             for f in files:
                 zf.write(f, arcname=f.name)

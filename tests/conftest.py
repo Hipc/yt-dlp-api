@@ -13,12 +13,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 # Set test environment variables before importing main
-os.environ.update({
-    "API_KEY_AUTH_ENABLED": "false",
-    "SERVER_OUTPUT_ROOT": tempfile.mkdtemp(),
-    "COOKIES_DIR": tempfile.mkdtemp(),
-    "LOG_LEVEL": "DEBUG",
-})
+os.environ.update(
+    {
+        "API_KEY_AUTH_ENABLED": "false",
+        "SERVER_OUTPUT_ROOT": tempfile.mkdtemp(),
+        "COOKIES_DIR": tempfile.mkdtemp(),
+        "LOG_LEVEL": "DEBUG",
+    }
+)
 
 import main
 from main import AuthConfig, CookieConfig, RetryConfig, State

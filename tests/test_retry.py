@@ -68,9 +68,7 @@ class TestIsRetryableError:
 
     def test_custom_retryable_codes(self) -> None:
         """Test custom retryable HTTP codes."""
-        config = RetryConfig(
-            retryable_http_codes=[503, 504]
-        )
+        config = RetryConfig(retryable_http_codes=[503, 504])
 
         error = Exception("HTTP Error 503")
         assert is_retryable_error(error, config) is True
@@ -98,7 +96,7 @@ class TestCalculateBackoff:
 
         assert delay0 == base
         assert delay1 == base * multiplier
-        assert delay2 == base * (multiplier ** 2)
+        assert delay2 == base * (multiplier**2)
 
     def test_backoff_with_jitter(self) -> None:
         """Test that jitter adds randomness to backoff."""
@@ -263,6 +261,7 @@ class TestRetryWithBackoff:
 
     def test_custom_exception_type(self, retry_config) -> None:
         """Test that custom exception types can be retried."""
+
         class CustomError(Exception):
             pass
 

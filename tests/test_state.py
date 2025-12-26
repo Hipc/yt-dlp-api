@@ -14,6 +14,7 @@ class TestState:
         """Test that initialization creates the database file."""
         State(db_file=temp_db)
         import pathlib
+
         assert pathlib.Path(temp_db).exists()
 
     def test_init_loads_existing_tasks(self, temp_db: str) -> None:
@@ -55,6 +56,7 @@ class TestState:
     def test_add_task_creates_output_directory(self, test_state: State, temp_dir) -> None:
         """Test that add_task creates the output directory."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = temp_dir / "downloads"
 
@@ -69,6 +71,7 @@ class TestState:
             task = test_state.get_task(task_id)
             assert task is not None
             import pathlib
+
             assert pathlib.Path(task.task_output_path).exists()
         finally:
             main.SERVER_OUTPUT_ROOT = original_root

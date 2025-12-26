@@ -35,7 +35,9 @@ class TestDownloadEndpoints:
     """Tests for /download, /audio, /subtitles endpoints."""
 
     @pytest.mark.asyncio
-    async def test_download_video_success(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_video_success(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test successful video download request."""
         payload = {
             "url": sample_video_url,
@@ -56,7 +58,9 @@ class TestDownloadEndpoints:
             assert isinstance(data["task_id"], str)
 
     @pytest.mark.asyncio
-    async def test_download_audio_success(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_audio_success(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test successful audio download request."""
         payload = {
             "url": sample_video_url,
@@ -77,7 +81,9 @@ class TestDownloadEndpoints:
             assert "task_id" in data
 
     @pytest.mark.asyncio
-    async def test_download_subtitles_success(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_subtitles_success(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test successful subtitles download request."""
         payload = {
             "url": sample_video_url,
@@ -100,7 +106,9 @@ class TestDownloadEndpoints:
             assert "task_id" in data
 
     @pytest.mark.asyncio
-    async def test_download_with_custom_retry_config(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_with_custom_retry_config(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test download with custom retry configuration."""
         payload = {
             "url": sample_video_url,
@@ -120,7 +128,9 @@ class TestDownloadEndpoints:
             assert data["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_download_deduplication(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_deduplication(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test that duplicate requests return existing task ID."""
         payload = {
             "url": sample_video_url,
@@ -144,7 +154,9 @@ class TestDownloadEndpoints:
             mock_process.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_download_invalid_output_path(self, client_with_mock_state: AsyncClient, sample_video_url: str) -> None:
+    async def test_download_invalid_output_path(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str
+    ) -> None:
         """Test that invalid output path is rejected."""
         payload = {
             "url": sample_video_url,
@@ -185,6 +197,7 @@ class TestTaskEndpoints:
     async def test_get_task_not_found(self, client_with_mock_state: AsyncClient) -> None:
         """Test getting non-existent task."""
         import uuid
+
         fake_id = str(uuid.uuid4())
 
         response = await client_with_mock_state.get(f"/task/{fake_id}")
@@ -244,7 +257,9 @@ class TestTaskEndpoints:
         assert data["data"]["error"] == error
 
     @pytest.mark.asyncio
-    async def test_get_partial_task_includes_result(self, client_with_mock_state: AsyncClient) -> None:
+    async def test_get_partial_task_includes_result(
+        self, client_with_mock_state: AsyncClient
+    ) -> None:
         """Test that partial status includes result data."""
         task_id = main.state.add_task(
             job_type=main.JobType.subtitles,
@@ -267,7 +282,9 @@ class TestInfoEndpoints:
     """Tests for /info and /formats endpoints."""
 
     @pytest.mark.asyncio
-    async def test_get_video_info(self, client_with_mock_state: AsyncClient, sample_video_url: str, sample_video_info: dict) -> None:
+    async def test_get_video_info(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str, sample_video_info: dict
+    ) -> None:
         """Test getting video information."""
         with patch("main.service.get_info", return_value=sample_video_info):
             response = await client_with_mock_state.get(f"/info?url={sample_video_url}")
@@ -287,7 +304,9 @@ class TestInfoEndpoints:
             assert response.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_list_formats(self, client_with_mock_state: AsyncClient, sample_video_url: str, sample_formats: list) -> None:
+    async def test_list_formats(
+        self, client_with_mock_state: AsyncClient, sample_video_url: str, sample_formats: list
+    ) -> None:
         """Test listing available formats."""
         with patch("main.service.list_formats", return_value=sample_formats):
             response = await client_with_mock_state.get(f"/formats?url={sample_video_url}")
@@ -350,10 +369,13 @@ class TestTaskFileEndpoints:
     """Tests for /task/{task_id}/files, /task/{task_id}/file, /task/{task_id}/zip endpoints."""
 
     @pytest.mark.asyncio
-    async def test_list_task_files(self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir) -> None:
+    async def test_list_task_files(
+        self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir
+    ) -> None:
         """Test listing files for a completed task."""
         # Create task and output directory
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = temp_dir / "downloads"
 
@@ -403,9 +425,12 @@ class TestTaskFileEndpoints:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_download_task_file(self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir) -> None:
+    async def test_download_task_file(
+        self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir
+    ) -> None:
         """Test downloading a specific task file."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = temp_dir / "downloads"
 
@@ -435,7 +460,9 @@ class TestTaskFileEndpoints:
             main.SERVER_OUTPUT_ROOT = original_root
 
     @pytest.mark.asyncio
-    async def test_download_task_zip(self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir) -> None:
+    async def test_download_task_zip(
+        self, client_with_mock_state: AsyncClient, mock_output_root, temp_dir
+    ) -> None:
         """Test downloading task files as ZIP."""
         import zipfile
         from io import BytesIO
@@ -486,11 +513,14 @@ class TestAuthentication:
     async def test_auth_enabled_requires_key(self) -> None:
         """Test that enabled auth requires valid API key."""
         import main
+
         original_config = main.auth_config
 
         try:
             # Enable auth
-            main.auth_config = main.AuthConfig(enabled=True, master_key="test-key", header_name="X-API-Key")
+            main.auth_config = main.AuthConfig(
+                enabled=True, master_key="test-key", header_name="X-API-Key"
+            )
 
             transport = ASGITransport(app=main.app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -505,6 +535,7 @@ class TestAuthentication:
     async def test_auth_disabled_allows_access(self) -> None:
         """Test that disabled auth allows access."""
         import main
+
         original_config = main.auth_config
 
         try:
@@ -514,10 +545,13 @@ class TestAuthentication:
             with patch("main.process_task"):
                 transport = ASGITransport(app=main.app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
-                    response = await client.post("/download", json={
-                        "url": "https://example.com/video",
-                        "format": "best",
-                    })
+                    response = await client.post(
+                        "/download",
+                        json={
+                            "url": "https://example.com/video",
+                            "format": "best",
+                        },
+                    )
 
                     # Should succeed without API key
                     assert response.status_code in (200, 400)  # May fail on other validation

@@ -151,6 +151,7 @@ class TestResolveTaskBaseDir:
     def test_empty_path_uses_default(self, tmp_path) -> None:
         """Test empty path resolves to 'default' subdir."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = tmp_path
 
@@ -165,6 +166,7 @@ class TestResolveTaskBaseDir:
     def test_dot_slash_uses_default(self, tmp_path) -> None:
         """Test './' path resolves to 'default' subdir."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = tmp_path
 
@@ -178,6 +180,7 @@ class TestResolveTaskBaseDir:
     def test_safe_name_creates_subdir(self, tmp_path) -> None:
         """Test safe name creates appropriate subdirectory."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = tmp_path
 
@@ -192,6 +195,7 @@ class TestResolveTaskBaseDir:
     def test_unsafe_name_raises_http_exception(self, tmp_path) -> None:
         """Test unsafe names raise HTTP 400."""
         import main
+
         original_root = main.SERVER_OUTPUT_ROOT
         main.SERVER_OUTPUT_ROOT = tmp_path
 
@@ -209,6 +213,7 @@ class TestResolveCookieFile:
     def test_no_cookie_file_returns_none(self) -> None:
         """Test when no cookie file is configured."""
         import main
+
         original_config = main.cookie_config
         main.cookie_config = main.CookieConfig(cookies_file=None)
 
