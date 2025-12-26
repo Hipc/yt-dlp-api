@@ -18,6 +18,7 @@ addopts = [
 markers = [
     "unit: marks tests as unit tests (fast, isolated)",
     "integration: marks tests as integration tests (slower, may use external resources)",
+    "network: marks tests that require network access (skip in CI by default)",
     "docker: marks tests that require Docker",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

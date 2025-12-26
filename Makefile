@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint format test test-cov test-all clean docker-build
+.PHONY: help install install-dev lint format test test-cov test-all clean docker-build test-network
 
 help:  ## Show this help message
 	@echo "Available targets:"
@@ -56,3 +56,6 @@ docker-run:  ## Run Docker container
 
 check: lint test-cov  ## Run all checks (lint + test)
 	@echo "All checks passed!"
+
+test-network:  ## Run network tests (requires internet, skipped in CI)
+	pytest -m network -v
