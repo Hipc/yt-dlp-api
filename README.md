@@ -11,6 +11,8 @@ A RESTful API service built with FastAPI and yt-dlp for video information retrie
 - Asynchronous download processing
 - Multiple video format support
 - Persistent task status storage
+- Download progress reporting
+- Task controls: stop, restart, delete
 - Detailed video information queries
 - RESTful API design
 
@@ -78,9 +80,19 @@ GET /task/{task_id}
     "data": {
         "id": "task_id",
         "url": "video_url",
-        "status": "pending/completed/failed",
+        "status": "pending/downloading/canceling/canceled/completed/failed",
+        "progress": {
+            "percent": 12.34,
+            "downloaded_bytes": 12345678,
+            "total_bytes": 98765432,
+            "total_bytes_estimate": 98765432,
+            "speed": 123456,
+            "eta": 120,
+            "elapsed": 12.3,
+            "filename": "/path/to/file"
+        },
         "result": {}, // Contains download info when completed
-        "error": "error message" // Contains error when failed
+        "error": "error message" // Contains error when failed/canceled
     }
 }
 ```
@@ -100,7 +112,8 @@ GET /tasks
         {
             "id": "task_id",
             "url": "video_url",
-            "status": "task_status"
+            "status": "task_status",
+            "progress": {}
             // ... other task information
         }
     ]
@@ -162,6 +175,61 @@ GET /download/{task_id}/file
 }
 ```
 
+### 7. Stop a Running Task
+
+**Request:**
+```http
+POST /task/{task_id}/stop
+```
+
+**Response:**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "task_id",
+        "status": "canceling"
+    }
+}
+```
+
+### 8. Restart a Finished Task
+
+**Request:**
+```http
+POST /task/{task_id}/restart?quiet=false
+```
+
+**Response:**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "task_id",
+        "status": "pending"
+    }
+}
+```
+
+### 9. Delete a Task (and Files)
+
+**Request:**
+```http
+DELETE /task/{task_id}
+```
+
+**Response:**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "task_id",
+        "cancel_requested": true,
+        "deleted_files": 3
+    }
+}
+```
+
 ## Error Handling
 
 All API endpoints return appropriate HTTP status codes and detailed error messages when errors occur:
@@ -180,6 +248,7 @@ The service uses SQLite database to store task information, with the database fi
 - Download format
 - Task status
 - Download result
+- Download progress
 - Error message
 - Timestamp
 
@@ -200,3 +269,4 @@ docker run -p 8000:8000 -v $(pwd)/downloads:/app/downloads yt-dlp-api
 1. Ensure sufficient disk space for storing downloaded videos
 2. Configure appropriate security measures in production environment
 3. Comply with video platform terms of service and copyright regulations
+4. Deleting a task also deletes downloaded files and partial cache files under its output directory
