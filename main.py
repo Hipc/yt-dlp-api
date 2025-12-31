@@ -9,7 +9,7 @@ import json
 import datetime
 import sqlite3
 from typing import Dict, Any, Optional, List, Callable, Set
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, Header
 from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
 from pydantic import BaseModel
@@ -457,7 +457,26 @@ def delete_task_files(task: Task) -> int:
             print(f"Error deleting file {path}: {e}")
     return deleted
 
-app = FastAPI(title="yt-dlp API", description="API for downloading videos using yt-dlp")
+def require_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+) -> None:
+    api_key = os.getenv("YTDLP_API_KEY")
+    if not api_key:
+        return
+    if x_api_key == api_key:
+        return
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+        if token == api_key:
+            return
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+app = FastAPI(
+    title="yt-dlp API",
+    description="API for downloading videos using yt-dlp",
+    dependencies=[Depends(require_api_key)],
+)
 
 class DownloadRequest(BaseModel):
     url: str

@@ -39,6 +39,15 @@ python main.py
 
 服务器将在 http://localhost:8000 启动
 
+## API Key（可选）
+
+设置环境变量 `YTDLP_API_KEY` 后会启用 API Key 校验；未设置时不校验。
+
+可通过以下任一请求头传入：
+
+- `X-API-Key: <your_key>`
+- `Authorization: Bearer <your_key>`
+
 ## API 接口文档
 
 ### 1. 提交下载任务

@@ -39,6 +39,15 @@ python main.py
 
 The server will start at http://localhost:8000
 
+## API Key (Optional)
+
+Set `YTDLP_API_KEY` to enable API key checks. If not set, no API key is required.
+
+Send the key using one of the following headers:
+
+- `X-API-Key: <your_key>`
+- `Authorization: Bearer <your_key>`
+
 ## API Documentation
 
 ### 1. Submit Download Task
