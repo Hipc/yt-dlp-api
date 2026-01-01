@@ -11,6 +11,8 @@
 - 异步下载处理
 - 支持多种视频格式
 - 任务状态持久化存储
+- 下载进度上报
+- 任务控制：停止、重启、删除
 - 提供详细的视频信息查询
 - RESTful API 设计
 
@@ -36,6 +38,15 @@ python main.py
 ```
 
 服务器将在 http://localhost:8000 启动
+
+## API Key（可选）
+
+设置环境变量 `YTDLP_API_KEY` 后会启用 API Key 校验；未设置时不校验。
+
+可通过以下任一请求头传入：
+
+- `X-API-Key: <your_key>`
+- `Authorization: Bearer <your_key>`
 
 ## API 接口文档
 
@@ -78,9 +89,19 @@ GET /task/{task_id}
     "data": {
         "id": "任务ID",
         "url": "视频URL",
-        "status": "pending/completed/failed",
+        "status": "pending/downloading/canceling/canceled/completed/failed",
+        "progress": {
+            "percent": 12.34,
+            "downloaded_bytes": 12345678,
+            "total_bytes": 98765432,
+            "total_bytes_estimate": 98765432,
+            "speed": 123456,
+            "eta": 120,
+            "elapsed": 12.3,
+            "filename": "/path/to/file"
+        },
         "result": {}, // 当任务完成时包含下载信息
-        "error": "错误信息" // 当任务失败时包含
+        "error": "错误信息" // 当任务失败/取消时包含
     }
 }
 ```
@@ -100,7 +121,8 @@ GET /tasks
         {
             "id": "任务ID",
             "url": "视频URL",
-            "status": "任务状态"
+            "status": "任务状态",
+            "progress": {}
             // ... 其他任务信息
         }
     ]
@@ -162,6 +184,61 @@ GET /download/{task_id}/file
 }
 ```
 
+### 7. 停止正在运行的任务
+
+**请求：**
+```http
+POST /task/{task_id}/stop
+```
+
+**返回：**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "任务ID",
+        "status": "canceling"
+    }
+}
+```
+
+### 8. 重新开始已结束任务
+
+**请求：**
+```http
+POST /task/{task_id}/restart?quiet=false
+```
+
+**返回：**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "任务ID",
+        "status": "pending"
+    }
+}
+```
+
+### 9. 删除任务（并清理文件）
+
+**请求：**
+```http
+DELETE /task/{task_id}
+```
+
+**返回：**
+```json
+{
+    "status": "success",
+    "data": {
+        "id": "任务ID",
+        "cancel_requested": true,
+        "deleted_files": 3
+    }
+}
+```
+
 ## 错误处理
 
 所有 API 接口在发生错误时会返回适当的 HTTP 状态码和详细的错误信息：
@@ -180,6 +257,7 @@ GET /download/{task_id}/file
 - 下载格式
 - 任务状态
 - 下载结果
+- 下载进度
 - 错误信息
 - 时间戳
 
@@ -200,3 +278,4 @@ docker run -p 8000:8000 -v $(pwd)/downloads:/app/downloads yt-dlp-api
 1. 请确保有足够的磁盘空间存储下载的视频
 2. 建议在生产环境中配置适当的安全措施
 3. 遵守视频平台的使用条款和版权规定
+4. 删除任务会同时删除输出目录下的下载文件与部分缓存文件
