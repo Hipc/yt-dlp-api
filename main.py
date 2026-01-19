@@ -203,6 +203,62 @@ class State:
     
     def list_tasks(self) -> List[Task]:
         return list(self.tasks.values())
+    
+    def delete_task(self, task_id: str) -> tuple[bool, Optional[str], Optional[str]]:
+        """
+        删除任务及其对应的文件
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            tuple: (是否成功, 删除的文件路径, 错误信息)
+        """
+        task = self.tasks.get(task_id)
+        if not task:
+            return False, None, "Task not found"
+        
+        deleted_file = None
+        
+        # 如果任务已完成，尝试删除对应的文件
+        if task.status == "completed" and task.result:
+            try:
+                # 从结果中提取文件名
+                filename = task.result.get("requested_downloads", [{}])[0].get("filename")
+                if not filename:
+                    requested_filename = task.result.get("requested_filename")
+                    if requested_filename:
+                        filename = requested_filename
+                    else:
+                        # 尝试构建可能的文件路径
+                        title = task.result.get("title", "video")
+                        ext = task.result.get("ext", "mp4")
+                        filename = os.path.join(task.output_path, f"{title}.{ext}")
+                
+                # 删除文件
+                if filename and os.path.exists(filename):
+                    os.remove(filename)
+                    deleted_file = filename
+            except Exception as e:
+                print(f"Error deleting file for task {task_id}: {e}")
+        
+        # 从内存中删除
+        if task_id in self.tasks:
+            del self.tasks[task_id]
+        
+        # 从数据库中删除
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.commit()
+            # 执行VACUUM整理数据库，回收空间防止数据库膨胀
+            cursor.execute("VACUUM")
+            conn.close()
+        except Exception as e:
+            return False, deleted_file, f"Error deleting from database: {e}"
+        
+        return True, deleted_file, None
 
 # 创建全局状态对象
 state = State()
@@ -364,6 +420,26 @@ async def api_download_video(request: DownloadRequest):
     ))
     
     return {"status": "success", "task_id": task_id}
+
+@app.delete("/task/{task_id}", response_class=JSONResponse)
+async def delete_task(task_id: str):
+    """
+    删除指定的下载任务及其对应的文件。
+    """
+    success, deleted_file, error = state.delete_task(task_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=error or f"Task with ID {task_id} not found")
+    
+    response = {
+        "status": "success",
+        "message": f"Task {task_id} deleted successfully"
+    }
+    
+    if deleted_file:
+        response["deleted_file"] = deleted_file
+    
+    return response
 
 @app.get("/task/{task_id}", response_class=JSONResponse)
 async def get_task_status(task_id: str):
