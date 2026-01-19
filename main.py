@@ -1,6 +1,7 @@
 import yt_dlp
 import os
 import uuid
+import urllib.parse
 
 import asyncio
 
@@ -8,9 +9,10 @@ import json
 import datetime
 import sqlite3
 from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
@@ -362,6 +364,19 @@ def list_available_formats(url: str) -> List[Dict[str, Any]]:
     return info.get('formats', [])
 
 app = FastAPI(title="yt-dlp API", description="API for downloading videos using yt-dlp")
+
+# URL 解码中间件 - 处理被编码的请求路径
+class URLDecodeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # 获取原始路径
+        original_path = request.scope.get('path', '')
+        # 如果路径包含编码字符（如 %3A），进行解码
+        if '%' in original_path:
+            decoded_path = urllib.parse.unquote(original_path)
+            request.scope['path'] = decoded_path
+        return await call_next(request)
+
+app.add_middleware(URLDecodeMiddleware)
 
 # 管理页面路由
 @app.get("/", response_class=HTMLResponse)
