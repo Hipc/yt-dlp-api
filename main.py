@@ -2,6 +2,8 @@ import yt_dlp
 import os
 import uuid
 import urllib.parse
+import urllib.request
+import logging
 
 import asyncio
 
@@ -16,6 +18,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+
+# 读取 .env 配置（如果存在）
+load_dotenv()
+
+_app_logger = logging.getLogger("yt_dlp_api")
 
 def NormalizeString(s: str, max_length: int = 200) -> str:
     """
@@ -266,6 +274,93 @@ class State:
 # 创建全局状态对象
 state = State()
 
+def _get_cookie_cloud_config() -> Dict[str, Optional[str]]:
+    return {
+        "server": os.getenv("COOKIE_CLOUD_SERVER"),
+        "password": os.getenv("COOKIE_CLOUD_PASSWORD"),
+        "uuid": os.getenv("COOKIE_CLOUD_UUID"),
+    }
+
+def _is_bilibili_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return "bilibili.com" in host or host.endswith(".bilibili.com") or host == "b23.tv"
+    except Exception:
+        return "bilibili.com" in url or "b23.tv" in url
+
+def _build_cookiecloud_url(server: str, uuid_val: str) -> str:
+    server = server.strip()
+    if not server:
+        return ""
+    if "//" not in server:
+        server = "http://" + server
+    server = server.rstrip("/")
+    return server + "/get/" + uuid_val
+    
+
+def _cookies_list_to_header(cookies: List[Dict[str, Any]], domain_keyword: str) -> Optional[str]:
+    parts: List[str] = []
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain", ""))
+        if domain_keyword not in domain:
+            continue
+        name = item.get("name")
+        value = item.get("value")
+        if not name or value is None:
+            continue
+        parts.append(f"{name}={value}")
+    return "; ".join(parts) if parts else None
+
+def _extract_bilibili_cookie_header(cookie_data: Any) -> Optional[str]:
+    if isinstance(cookie_data, dict):
+        for key, val in cookie_data.items():
+            if "bilibili.com" in str(key):
+                if isinstance(val, str):
+                    return val
+                if isinstance(val, list):
+                    return _cookies_list_to_header(val, "bilibili.com")
+        # 兜底：如果是 name->value 结构
+        if all(isinstance(v, str) for v in cookie_data.values()):
+            return "; ".join([f"{k}={v}" for k, v in cookie_data.items()])
+    if isinstance(cookie_data, list):
+        return _cookies_list_to_header(cookie_data, "bilibili.com")
+    return None
+
+def _fetch_bilibili_cookie_header() -> Optional[str]:
+    cfg = _get_cookie_cloud_config()
+    server = cfg.get("server")
+    password = cfg.get("password")
+    uuid_val = cfg.get("uuid")
+
+    if not server or not password or not uuid_val:
+        return None
+
+    payload = json.dumps({"password": password}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+
+    url = _build_cookiecloud_url(server, uuid_val)
+
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+        data = json.loads(body)
+
+        cookie_data = data.get("cookie_data")
+        if cookie_data is None and isinstance(data.get("data"), dict):
+            cookie_data = data["data"].get("cookie_data")
+
+        cookie_header = _extract_bilibili_cookie_header(cookie_data)
+        if cookie_header:
+            return cookie_header
+    except Exception as e:
+        _app_logger.warning(f"CookieCloud request failed for {url}: {e}")
+
+    return None
+
 def download_video(url: str, output_path: str = "./downloads", format: str = "best", quiet: bool = False) -> Dict[str, Any]:
     """
     Download a video from the specified URL using yt-dlp.
@@ -291,6 +386,10 @@ def download_video(url: str, output_path: str = "./downloads", format: str = "be
         safe_filename = create_safe_filename(title, format, ext)
         return os.path.join(output_path, safe_filename)
     
+    cookie_header = None
+    if _is_bilibili_url(url):
+        cookie_header = _fetch_bilibili_cookie_header()
+
     ydl_opts = {
         'outtmpl': os.path.join(output_path, '%(title).180s.%(ext)s'),
         'quiet': quiet,
@@ -307,6 +406,10 @@ def download_video(url: str, output_path: str = "./downloads", format: str = "be
         'no_warnings': True,
         'skip_download': True,
     }
+
+    if cookie_header:
+        ydl_opts['http_headers'] = {'Cookie': cookie_header}
+        temp_ydl_opts['http_headers'] = {'Cookie': cookie_header}
     
     try:
         # 先获取视频信息来生成安全的文件名
@@ -363,12 +466,9 @@ def list_available_formats(url: str) -> List[Dict[str, Any]]:
     
     return info.get('formats', [])
 
-import logging
-
 app = FastAPI(title="yt-dlp API", description="API for downloading videos using yt-dlp")
 
 # 确保应用日志可见（无论是否通过 uvicorn CLI 启动）
-_app_logger = logging.getLogger("yt_dlp_api")
 if not _app_logger.handlers:
     handler = logging.StreamHandler()
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
