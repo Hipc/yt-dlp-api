@@ -363,21 +363,51 @@ def list_available_formats(url: str) -> List[Dict[str, Any]]:
     
     return info.get('formats', [])
 
+import logging
+
 app = FastAPI(title="yt-dlp API", description="API for downloading videos using yt-dlp")
 
-# URL 解码中间件 - 处理被编码的请求路径
+# 确保应用日志可见（无论是否通过 uvicorn CLI 启动）
+_app_logger = logging.getLogger("yt_dlp_api")
+if not _app_logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    _app_logger.addHandler(handler)
+_app_logger.setLevel(logging.INFO)
+
+# URL 解码中间件 - 处理被编码的请求路径和代理请求
 class URLDecodeMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # 获取原始路径
+        logger = _app_logger
+        
+        # 获取原始路径和 raw_path
         original_path = request.scope.get('path', '')
-        # 如果路径包含编码字符（如 %3A），进行解码
-        if '%' in original_path:
-            decoded_path = urllib.parse.unquote(original_path)
-            if decoded_path.startswith("http://") or decoded_path.startswith("https://"):
-                parsed = urllib.parse.urlparse(decoded_path)
-                request.scope["path"] = parsed.path
-            else:
-                request.scope['path'] = decoded_path
+        raw_path = request.scope.get('raw_path', b'').decode('utf-8', errors='ignore')
+        
+        logger.info(f"[Middleware] Original path: {original_path}")
+        logger.info(f"[Middleware] Raw path: {raw_path}")
+        print(f"[Middleware] Original path: {original_path}", flush=True)
+        print(f"[Middleware] Raw path: {raw_path}", flush=True)
+        
+        # 优先检查 raw_path（包含原始未解码的路径）
+        path_to_check = raw_path if raw_path else original_path
+        
+        # 解码路径
+        decoded_path = urllib.parse.unquote(path_to_check)
+        logger.info(f"[Middleware] Decoded path: {decoded_path}")
+        print(f"[Middleware] Decoded path: {decoded_path}", flush=True)
+        
+        # 检查是否是代理请求（路径以 http:// 或 https:// 开头）
+        if decoded_path.startswith("http://") or decoded_path.startswith("https://"):
+            parsed = urllib.parse.urlparse(decoded_path)
+            new_path = parsed.path if parsed.path else "/"
+            logger.info(f"[Middleware] Proxy request detected, extracting path: {new_path}")
+            print(f"[Middleware] Proxy request detected, extracting path: {new_path}", flush=True)
+            request.scope["path"] = new_path
+        else:
+            request.scope['path'] = decoded_path
+        
         return await call_next(request)
 
 app.add_middleware(URLDecodeMiddleware)

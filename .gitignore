@@ -4,3 +4,4 @@ downloads/
 .DS_Store
 tasks.db
 __pycache__/
+.vscode/

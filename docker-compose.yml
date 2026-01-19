@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  yt-dlp-api:
+    image: hipc/yt-dlp:latest
+    container_name: yt-dlp-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./main.py:/app/main.py
+    restart: unless-stopped
