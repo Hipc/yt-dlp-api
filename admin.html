@@ -473,6 +473,40 @@
                 transition: border-color 0.2s;
             }
 
+            .url-input-row {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+
+            .url-input-row input {
+                flex: 1;
+            }
+
+            .btn-inline {
+                width: auto;
+                padding: 12px 16px;
+                border-radius: 8px;
+                border: 1px solid #00d9ff;
+                background: rgba(0, 217, 255, 0.1);
+                color: #0099cc;
+                cursor: pointer;
+                font-size: 0.9rem;
+                white-space: nowrap;
+                transition: all 0.2s ease;
+            }
+
+            .btn-inline:hover {
+                background: rgba(0, 217, 255, 0.2);
+            }
+
+            .btn-inline:disabled {
+                background: #f5f5f5;
+                color: #bbb;
+                border-color: #eee;
+                cursor: not-allowed;
+            }
+
             .form-group input:focus,
             .form-group select:focus {
                 outline: none;
@@ -620,12 +654,22 @@
                 <form id="newTaskForm" onsubmit="submitNewTask(event)">
                     <div class="form-group">
                         <label for="taskUrl">视频链接</label>
-                        <input
-                            type="url"
-                            id="taskUrl"
-                            placeholder="https://www.youtube.com/watch?v=..."
-                            required
-                        />
+                        <div class="url-input-row">
+                            <input
+                                type="url"
+                                id="taskUrl"
+                                placeholder="https://www.youtube.com/watch?v=..."
+                                required
+                            />
+                            <button
+                                type="button"
+                                class="btn-inline"
+                                id="fetchFormatsBtn"
+                                onclick="fetchFormatsForUrl()"
+                            >
+                                获取format
+                            </button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="taskFormat">下载格式</label>
@@ -697,6 +741,90 @@
                 setTimeout(() => {
                     toast.classList.remove("show");
                 }, 3000);
+            }
+
+            function formatBytes(bytes) {
+                if (!bytes || bytes <= 0) return "";
+                const units = ["B", "KB", "MB", "GB", "TB"];
+                let size = bytes;
+                let unitIndex = 0;
+                while (size >= 1024 && unitIndex < units.length - 1) {
+                    size /= 1024;
+                    unitIndex++;
+                }
+                return `${size.toFixed(size >= 10 ? 0 : 1)}${units[unitIndex]}`;
+            }
+
+            function buildFormatLabel(format) {
+                const parts = [];
+                if (format.format_id) parts.push(format.format_id);
+                if (format.ext) parts.push(format.ext);
+                if (format.resolution) parts.push(format.resolution);
+                if (!format.resolution && format.height)
+                    parts.push(`${format.height}p`);
+                if (format.fps) parts.push(`${format.fps}fps`);
+                if (format.format_note) parts.push(format.format_note);
+                if (format.vcodec && format.vcodec !== "none")
+                    parts.push(format.vcodec);
+                if (format.acodec && format.acodec !== "none")
+                    parts.push(format.acodec);
+                const sizeText = format.filesize
+                    ? formatBytes(format.filesize)
+                    : format.filesize_approx
+                      ? `~${formatBytes(format.filesize_approx)}`
+                      : "";
+                if (sizeText) parts.push(sizeText);
+                return parts.filter(Boolean).join(" | ");
+            }
+
+            async function fetchFormatsForUrl() {
+                const url = document.getElementById("taskUrl").value.trim();
+                const btn = document.getElementById("fetchFormatsBtn");
+                const select = document.getElementById("taskFormat");
+
+                if (!url) {
+                    showToast("请先输入视频链接", "error");
+                    return;
+                }
+
+                const originalText = btn.textContent;
+                btn.textContent = "获取中...";
+                btn.disabled = true;
+
+                try {
+                    const response = await fetch(
+                        `${API_BASE}/formats?url=${encodeURIComponent(url)}`,
+                    );
+                    const data = await response.json();
+
+                    if (response.ok && data.status === "success") {
+                        const formats = (data.data || []).filter(
+                            (f) => f && f.format_id,
+                        );
+
+                        if (formats.length === 0) {
+                            showToast("未获取到可用格式", "error");
+                            return;
+                        }
+
+                        select.innerHTML = "";
+                        formats.forEach((format) => {
+                            const option = document.createElement("option");
+                            option.value = format.format_id;
+                            option.textContent = buildFormatLabel(format);
+                            select.appendChild(option);
+                        });
+
+                        showToast(`已获取 ${formats.length} 个格式`);
+                    } else {
+                        showToast(data.detail || "获取格式失败", "error");
+                    }
+                } catch (error) {
+                    showToast("获取格式失败: " + error.message, "error");
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             }
 
             async function refreshTasks() {
