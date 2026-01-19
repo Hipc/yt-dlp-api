@@ -3,11 +3,10 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY . .
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* &&\
-    pip install --no-cache-dir -r requirements.txt
+# 下载静态编译的 ffmpeg，避免 apt-get update
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m pip install --no-cache-dir static-ffmpeg && \
+    static_ffmpeg_paths
 
 EXPOSE 8000
 
