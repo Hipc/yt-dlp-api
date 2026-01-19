@@ -189,13 +189,13 @@ class State:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
     
-    def update_task(self, task_id: str, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> None:
+    def update_task(self, task_id: str, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None, clear_fields: bool = False) -> None:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             task.status = status
-            if result:
+            if result is not None or clear_fields:
                 task.result = result
-            if error:
+            if error is not None or clear_fields:
                 task.error = error
             
             # 将更新后的任务状态保存到数据库
@@ -335,9 +335,22 @@ async def api_download_video(request: DownloadRequest):
     """
     Submit a video download task and return a task ID to track progress.
     """
-    # 如果有相同的url和output_path的任务已经存在，直接返回该任务
+    # 如果有相同的url和output_path的任务已经存在，检查状态
     existing_task = next((task for task in state.tasks.values() if task.format == request.format and task.url == request.url and task.output_path == request.output_path), None)
     if existing_task:
+        # 如果任务状态为失败，重置状态并重新尝试下载
+        if existing_task.status == "failed":
+            state.update_task(existing_task.id, "pending", result=None, error=None, clear_fields=True)
+            # 重新执行下载任务
+            asyncio.create_task(process_download_task(
+                task_id=existing_task.id,
+                url=request.url,
+                output_path=request.output_path,
+                format=request.format,
+                quiet=request.quiet
+            ))
+            return {"status": "success", "task_id": existing_task.id, "message": "Task restarted"}
+        # 非失败状态直接返回该任务
         return {"status": "success", "task_id": existing_task.id}
     task_id = state.add_task(request.url, request.output_path, request.format)
     
