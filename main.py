@@ -373,7 +373,11 @@ class URLDecodeMiddleware(BaseHTTPMiddleware):
         # 如果路径包含编码字符（如 %3A），进行解码
         if '%' in original_path:
             decoded_path = urllib.parse.unquote(original_path)
-            request.scope['path'] = decoded_path
+            if decoded_path.startswith("http://") or decoded_path.startswith("https://"):
+                parsed = urllib.parse.urlparse(decoded_path)
+                request.scope["path"] = parsed.path
+            else:
+                request.scope['path'] = decoded_path
         return await call_next(request)
 
 app.add_middleware(URLDecodeMiddleware)
