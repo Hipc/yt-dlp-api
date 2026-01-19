@@ -1,0 +1,1023 @@
+<!-- @format -->
+
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>yt-dlp 任务管理</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    "Helvetica Neue", Arial, sans-serif;
+                background: #f5f7fa;
+                min-height: 100vh;
+                color: #333;
+            }
+
+            .layout {
+                display: flex;
+                min-height: 100vh;
+            }
+
+            /* 左侧边栏 */
+            .sidebar {
+                width: 280px;
+                background: #1a1a2e;
+                color: #fff;
+                padding: 30px 20px;
+                flex-shrink: 0;
+            }
+
+            .sidebar-header {
+                margin-bottom: 40px;
+            }
+
+            .sidebar-header h1 {
+                font-size: 1.4rem;
+                font-weight: 600;
+                color: #00d9ff;
+                margin-bottom: 5px;
+            }
+
+            .sidebar-header p {
+                font-size: 0.85rem;
+                color: #888;
+            }
+
+            .stats-section {
+                margin-bottom: 30px;
+            }
+
+            .stats-section h3 {
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                color: #666;
+                margin-bottom: 15px;
+            }
+
+            .stat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 15px;
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 8px;
+                margin-bottom: 10px;
+            }
+
+            .stat-item .label {
+                font-size: 0.9rem;
+                color: #aaa;
+            }
+
+            .stat-item .value {
+                font-size: 1.2rem;
+                font-weight: 600;
+            }
+
+            .stat-item.total .value {
+                color: #00d9ff;
+            }
+            .stat-item.completed .value {
+                color: #2ed573;
+            }
+            .stat-item.pending .value {
+                color: #ffa502;
+            }
+            .stat-item.failed .value {
+                color: #ff4757;
+            }
+
+            .sidebar-actions {
+                margin-top: 30px;
+            }
+
+            .sidebar-actions h3 {
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                color: #666;
+                margin-bottom: 15px;
+            }
+
+            .btn {
+                display: block;
+                width: 100%;
+                padding: 12px 15px;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 0.9rem;
+                font-weight: 500;
+                transition: all 0.2s ease;
+                text-align: left;
+                margin-bottom: 10px;
+            }
+
+            .btn-primary {
+                background: linear-gradient(135deg, #00d9ff, #0099cc);
+                color: #fff;
+            }
+
+            .btn-primary:hover {
+                opacity: 0.9;
+            }
+
+            .btn-danger {
+                background: rgba(255, 71, 87, 0.15);
+                color: #ff4757;
+                border: 1px solid rgba(255, 71, 87, 0.3);
+            }
+
+            .btn-danger:hover {
+                background: rgba(255, 71, 87, 0.25);
+            }
+
+            .btn-secondary {
+                background: rgba(255, 255, 255, 0.1);
+                color: #aaa;
+            }
+
+            .btn-secondary:hover {
+                background: rgba(255, 255, 255, 0.15);
+                color: #fff;
+            }
+
+            /* 右侧主内容 */
+            .main-content {
+                flex: 1;
+                padding: 30px 40px;
+                overflow-y: auto;
+            }
+
+            .main-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 25px;
+            }
+
+            .main-header h2 {
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: #333;
+            }
+
+            .page-info {
+                font-size: 0.9rem;
+                color: #888;
+            }
+
+            .task-list {
+                background: #fff;
+                border-radius: 12px;
+                box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+                overflow: hidden;
+            }
+
+            .task-list-header {
+                display: grid;
+                grid-template-columns: 1fr 140px 100px 120px;
+                gap: 15px;
+                padding: 15px 20px;
+                background: #fafbfc;
+                border-bottom: 1px solid #eee;
+                font-weight: 600;
+                color: #666;
+                font-size: 0.8rem;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .task-item {
+                display: grid;
+                grid-template-columns: 1fr 140px 100px 120px;
+                gap: 15px;
+                padding: 18px 20px;
+                border-bottom: 1px solid #f0f0f0;
+                align-items: center;
+                transition: background 0.15s ease;
+            }
+
+            .task-item:hover {
+                background: #fafbfc;
+            }
+
+            .task-item:last-child {
+                border-bottom: none;
+            }
+
+            .task-info {
+                overflow: hidden;
+            }
+
+            .task-title {
+                font-weight: 500;
+                margin-bottom: 4px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                color: #333;
+            }
+
+            .task-url {
+                font-size: 0.8rem;
+                color: #999;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .task-error {
+                font-size: 0.75rem;
+                color: #ff4757;
+                margin-top: 4px;
+            }
+
+            .task-format {
+                font-size: 0.85rem;
+                color: #666;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .status-badge {
+                display: inline-block;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-size: 0.75rem;
+                font-weight: 500;
+            }
+
+            .status-completed {
+                background: rgba(46, 213, 115, 0.15);
+                color: #1e9050;
+            }
+
+            .status-pending {
+                background: rgba(255, 165, 2, 0.15);
+                color: #cc8400;
+            }
+
+            .status-failed {
+                background: rgba(255, 71, 87, 0.15);
+                color: #cc3344;
+            }
+
+            .task-actions {
+                display: flex;
+                gap: 8px;
+            }
+
+            .task-actions .btn {
+                width: auto;
+                padding: 6px 12px;
+                font-size: 0.8rem;
+                margin: 0;
+            }
+
+            .btn-sm-success {
+                background: #2ed573;
+                color: #fff;
+            }
+
+            .btn-sm-success:hover {
+                background: #26b862;
+            }
+
+            .btn-sm-success:disabled {
+                background: #ccc;
+                cursor: not-allowed;
+            }
+
+            .btn-sm-danger {
+                background: #ff4757;
+                color: #fff;
+            }
+
+            .btn-sm-danger:hover {
+                background: #e63e4d;
+            }
+
+            .btn-sm-danger:disabled {
+                background: #ccc;
+                cursor: not-allowed;
+            }
+
+            .empty-state {
+                text-align: center;
+                padding: 60px 20px;
+                color: #999;
+            }
+
+            .empty-state p {
+                margin-bottom: 8px;
+            }
+
+            .loading {
+                text-align: center;
+                padding: 60px 20px;
+                color: #888;
+            }
+
+            .spinner {
+                width: 36px;
+                height: 36px;
+                border: 3px solid #e0e0e0;
+                border-top-color: #00d9ff;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+                margin: 0 auto 15px;
+            }
+
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            /* 分页 */
+            .pagination {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                gap: 8px;
+                margin-top: 25px;
+            }
+
+            .pagination button {
+                padding: 8px 14px;
+                border: 1px solid #ddd;
+                background: #fff;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.85rem;
+                color: #333;
+                transition: all 0.15s ease;
+            }
+
+            .pagination button:hover:not(:disabled) {
+                border-color: #00d9ff;
+                color: #00d9ff;
+            }
+
+            .pagination button:disabled {
+                background: #f5f5f5;
+                color: #ccc;
+                cursor: not-allowed;
+            }
+
+            .pagination button.active {
+                background: #00d9ff;
+                border-color: #00d9ff;
+                color: #fff;
+            }
+
+            .pagination .page-numbers {
+                display: flex;
+                gap: 5px;
+            }
+
+            /* Toast */
+            .toast {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                padding: 14px 24px;
+                border-radius: 8px;
+                color: #fff;
+                font-weight: 500;
+                opacity: 0;
+                transform: translateY(20px);
+                transition: all 0.3s ease;
+                z-index: 1000;
+            }
+
+            .toast.show {
+                opacity: 1;
+                transform: translateY(0);
+            }
+
+            .toast.success {
+                background: #2ed573;
+            }
+
+            .toast.error {
+                background: #ff4757;
+            }
+
+            /* 模态框 */
+            .modal-overlay {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0, 0, 0, 0.5);
+                z-index: 1000;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .modal-overlay.show {
+                display: flex;
+            }
+
+            .modal {
+                background: #fff;
+                border-radius: 12px;
+                padding: 30px;
+                width: 90%;
+                max-width: 480px;
+                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            }
+
+            .modal h2 {
+                margin-bottom: 25px;
+                color: #333;
+                font-size: 1.3rem;
+            }
+
+            .form-group {
+                margin-bottom: 20px;
+            }
+
+            .form-group label {
+                display: block;
+                margin-bottom: 8px;
+                color: #666;
+                font-size: 0.9rem;
+                font-weight: 500;
+            }
+
+            .form-group input,
+            .form-group select {
+                width: 100%;
+                padding: 12px 15px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                background: #fff;
+                color: #333;
+                font-size: 0.95rem;
+                transition: border-color 0.2s;
+            }
+
+            .form-group input:focus,
+            .form-group select:focus {
+                outline: none;
+                border-color: #00d9ff;
+            }
+
+            .modal-actions {
+                display: flex;
+                gap: 12px;
+                justify-content: flex-end;
+                margin-top: 30px;
+            }
+
+            .modal-actions .btn {
+                width: auto;
+                padding: 10px 20px;
+            }
+
+            .btn-modal-cancel {
+                background: #f5f5f5;
+                color: #666;
+            }
+
+            .btn-modal-cancel:hover {
+                background: #eee;
+            }
+
+            .btn-modal-submit {
+                background: #00d9ff;
+                color: #fff;
+            }
+
+            .btn-modal-submit:hover {
+                background: #00c4e6;
+            }
+
+            @media (max-width: 900px) {
+                .layout {
+                    flex-direction: column;
+                }
+
+                .sidebar {
+                    width: 100%;
+                    padding: 20px;
+                }
+
+                .main-content {
+                    padding: 20px;
+                }
+
+                .task-list-header {
+                    display: none;
+                }
+
+                .task-item {
+                    grid-template-columns: 1fr;
+                    gap: 10px;
+                }
+
+                .task-actions {
+                    justify-content: flex-start;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="layout">
+            <!-- 左侧边栏 -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <h1>yt-dlp</h1>
+                    <p>视频下载任务管理</p>
+                </div>
+
+                <div class="stats-section">
+                    <h3>任务统计</h3>
+                    <div class="stat-item total">
+                        <span class="label">总任务</span>
+                        <span class="value" id="stat-total">0</span>
+                    </div>
+                    <div class="stat-item completed">
+                        <span class="label">已完成</span>
+                        <span class="value" id="stat-completed">0</span>
+                    </div>
+                    <div class="stat-item pending">
+                        <span class="label">进行中</span>
+                        <span class="value" id="stat-pending">0</span>
+                    </div>
+                    <div class="stat-item failed">
+                        <span class="label">失败</span>
+                        <span class="value" id="stat-failed">0</span>
+                    </div>
+                </div>
+
+                <div class="sidebar-actions">
+                    <h3>操作</h3>
+                    <button
+                        class="btn btn-primary"
+                        onclick="openNewTaskModal()"
+                    >
+                        新建下载任务
+                    </button>
+                    <button class="btn btn-secondary" onclick="refreshTasks()">
+                        刷新列表
+                    </button>
+                    <button
+                        class="btn btn-danger"
+                        onclick="deleteCompletedTasks()"
+                    >
+                        清空已完成任务
+                    </button>
+                </div>
+            </aside>
+
+            <!-- 右侧主内容 -->
+            <main class="main-content">
+                <div class="main-header">
+                    <h2>任务列表</h2>
+                    <span class="page-info" id="page-info"></span>
+                </div>
+
+                <div class="task-list">
+                    <div class="task-list-header">
+                        <div>任务信息</div>
+                        <div>格式</div>
+                        <div>状态</div>
+                        <div>操作</div>
+                    </div>
+                    <div id="task-container">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            <p>加载中...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pagination" id="pagination"></div>
+            </main>
+        </div>
+
+        <!-- 新建任务模态框 -->
+        <div class="modal-overlay" id="newTaskModal">
+            <div class="modal">
+                <h2>新建下载任务</h2>
+                <form id="newTaskForm" onsubmit="submitNewTask(event)">
+                    <div class="form-group">
+                        <label for="taskUrl">视频链接</label>
+                        <input
+                            type="url"
+                            id="taskUrl"
+                            placeholder="https://www.youtube.com/watch?v=..."
+                            required
+                        />
+                    </div>
+                    <div class="form-group">
+                        <label for="taskFormat">下载格式</label>
+                        <select id="taskFormat">
+                            <option value="bestvideo+bestaudio/best">
+                                最佳质量 (视频+音频)
+                            </option>
+                            <option value="best">最佳单文件</option>
+                            <option value="bestaudio/best">
+                                仅音频 (最佳)
+                            </option>
+                            <option value="worst">最低质量</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskOutput">保存路径</label>
+                        <input
+                            type="text"
+                            id="taskOutput"
+                            value="./downloads"
+                            placeholder="./downloads"
+                        />
+                    </div>
+                    <div class="modal-actions">
+                        <button
+                            type="button"
+                            class="btn btn-modal-cancel"
+                            onclick="closeNewTaskModal()"
+                        >
+                            取消
+                        </button>
+                        <button type="submit" class="btn btn-modal-submit">
+                            开始下载
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Toast 通知 -->
+        <div class="toast" id="toast"></div>
+
+        <script>
+            const API_BASE = window.location.origin;
+            const PAGE_SIZE = 5;
+            const AUTO_REFRESH_INTERVAL = 5000;
+
+            let allTasks = [];
+            let currentPage = 1;
+            let autoRefreshTimer = null;
+
+            document.addEventListener("DOMContentLoaded", () => {
+                refreshTasks();
+                startAutoRefresh();
+            });
+
+            function startAutoRefresh() {
+                if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+                autoRefreshTimer = setInterval(
+                    refreshTasks,
+                    AUTO_REFRESH_INTERVAL,
+                );
+            }
+
+            function showToast(message, type = "success") {
+                const toast = document.getElementById("toast");
+                toast.textContent = message;
+                toast.className = `toast ${type} show`;
+                setTimeout(() => {
+                    toast.classList.remove("show");
+                }, 3000);
+            }
+
+            async function refreshTasks() {
+                try {
+                    const response = await fetch(`${API_BASE}/tasks`);
+                    const data = await response.json();
+
+                    if (data.status === "success") {
+                        allTasks = data.data || [];
+                        // 按状态排序
+                        const statusOrder = {
+                            pending: 0,
+                            completed: 1,
+                            failed: 2,
+                        };
+                        allTasks.sort(
+                            (a, b) =>
+                                (statusOrder[a.status] || 99) -
+                                (statusOrder[b.status] || 99),
+                        );
+
+                        updateStats(allTasks);
+                        renderCurrentPage();
+                    }
+                } catch (error) {
+                    console.error("获取任务失败:", error);
+                    document.getElementById("task-container").innerHTML = `
+                    <div class="empty-state">
+                        <p>无法连接到服务器</p>
+                        <p style="font-size: 0.85rem;">请确保 API 服务正在运行</p>
+                    </div>
+                `;
+                    document.getElementById("pagination").innerHTML = "";
+                }
+            }
+
+            function renderCurrentPage() {
+                const totalPages = Math.ceil(allTasks.length / PAGE_SIZE);
+
+                // 确保当前页有效
+                if (currentPage > totalPages && totalPages > 0) {
+                    currentPage = totalPages;
+                }
+                if (currentPage < 1) {
+                    currentPage = 1;
+                }
+
+                const startIndex = (currentPage - 1) * PAGE_SIZE;
+                const endIndex = startIndex + PAGE_SIZE;
+                const pageTasks = allTasks.slice(startIndex, endIndex);
+
+                renderTasks(pageTasks);
+                renderPagination(totalPages);
+                updatePageInfo(startIndex, endIndex);
+            }
+
+            function renderTasks(tasks) {
+                const container = document.getElementById("task-container");
+
+                if (!allTasks || allTasks.length === 0) {
+                    container.innerHTML = `
+                    <div class="empty-state">
+                        <p>暂无下载任务</p>
+                        <p style="font-size: 0.85rem;">点击左侧「新建下载任务」开始</p>
+                    </div>
+                `;
+                    return;
+                }
+
+                container.innerHTML = tasks
+                    .map((task) => {
+                        const title =
+                            task.result?.title || extractTitleFromUrl(task.url);
+                        const statusClass = `status-${task.status}`;
+                        const statusText =
+                            {
+                                pending: "进行中",
+                                completed: "已完成",
+                                failed: "失败",
+                            }[task.status] || task.status;
+
+                        const canDownload = task.status === "completed";
+                        const canDelete =
+                            task.status === "completed" ||
+                            task.status === "failed";
+
+                        return `
+                    <div class="task-item">
+                        <div class="task-info">
+                            <div class="task-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+                            <div class="task-url" title="${escapeHtml(task.url)}">${escapeHtml(task.url)}</div>
+                            ${task.error ? `<div class="task-error">错误: ${escapeHtml(task.error)}</div>` : ""}
+                        </div>
+                        <div class="task-format" title="${escapeHtml(task.format)}">${escapeHtml(task.format)}</div>
+                        <div>
+                            <span class="status-badge ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="task-actions">
+                            <button class="btn btn-sm-success" onclick="downloadFile('${task.id}')" ${canDownload ? "" : "disabled"}>下载</button>
+                            <button class="btn btn-sm-danger" onclick="deleteTask('${task.id}')" ${canDelete ? "" : "disabled"}>删除</button>
+                        </div>
+                    </div>
+                `;
+                    })
+                    .join("");
+            }
+
+            function renderPagination(totalPages) {
+                const pagination = document.getElementById("pagination");
+
+                if (totalPages <= 1) {
+                    pagination.innerHTML = "";
+                    return;
+                }
+
+                let html = `
+                <button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? "disabled" : ""}>上一页</button>
+                <div class="page-numbers">
+            `;
+
+                for (let i = 1; i <= totalPages; i++) {
+                    if (
+                        i === 1 ||
+                        i === totalPages ||
+                        (i >= currentPage - 1 && i <= currentPage + 1)
+                    ) {
+                        html += `<button class="${i === currentPage ? "active" : ""}" onclick="goToPage(${i})">${i}</button>`;
+                    } else if (i === currentPage - 2 || i === currentPage + 2) {
+                        html += `<button disabled>...</button>`;
+                    }
+                }
+
+                html += `
+                </div>
+                <button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? "disabled" : ""}>下一页</button>
+            `;
+
+                pagination.innerHTML = html;
+            }
+
+            function updatePageInfo(startIndex, endIndex) {
+                const pageInfo = document.getElementById("page-info");
+                if (allTasks.length === 0) {
+                    pageInfo.textContent = "";
+                } else {
+                    const actualEnd = Math.min(endIndex, allTasks.length);
+                    pageInfo.textContent = `显示 ${startIndex + 1}-${actualEnd} 条，共 ${allTasks.length} 条`;
+                }
+            }
+
+            function goToPage(page) {
+                currentPage = page;
+                renderCurrentPage();
+            }
+
+            function updateStats(tasks) {
+                const stats = {
+                    total: tasks.length,
+                    completed: tasks.filter((t) => t.status === "completed")
+                        .length,
+                    pending: tasks.filter((t) => t.status === "pending").length,
+                    failed: tasks.filter((t) => t.status === "failed").length,
+                };
+
+                document.getElementById("stat-total").textContent = stats.total;
+                document.getElementById("stat-completed").textContent =
+                    stats.completed;
+                document.getElementById("stat-pending").textContent =
+                    stats.pending;
+                document.getElementById("stat-failed").textContent =
+                    stats.failed;
+            }
+
+            function extractTitleFromUrl(url) {
+                try {
+                    const urlObj = new URL(url);
+                    return urlObj.hostname + urlObj.pathname.substring(0, 30);
+                } catch {
+                    return url.substring(0, 50);
+                }
+            }
+
+            function escapeHtml(text) {
+                if (!text) return "";
+                const div = document.createElement("div");
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            function downloadFile(taskId) {
+                window.open(`${API_BASE}/download/${taskId}/file`, "_blank");
+            }
+
+            async function deleteTask(taskId) {
+                if (!confirm("确定要删除这个任务吗？相关文件也会被删除。")) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_BASE}/task/${taskId}`, {
+                        method: "DELETE",
+                    });
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        showToast("任务删除成功");
+                        refreshTasks();
+                    } else {
+                        showToast(data.detail || "删除失败", "error");
+                    }
+                } catch (error) {
+                    showToast("删除失败: " + error.message, "error");
+                }
+            }
+
+            async function deleteCompletedTasks() {
+                const completedTasks = allTasks.filter(
+                    (t) => t.status === "completed",
+                );
+
+                if (completedTasks.length === 0) {
+                    showToast("没有已完成的任务", "error");
+                    return;
+                }
+
+                if (
+                    !confirm(
+                        `确定要删除 ${completedTasks.length} 个已完成的任务吗？相关文件也会被删除。`,
+                    )
+                ) {
+                    return;
+                }
+
+                let successCount = 0;
+                for (const task of completedTasks) {
+                    try {
+                        const delResponse = await fetch(
+                            `${API_BASE}/task/${task.id}`,
+                            {
+                                method: "DELETE",
+                            },
+                        );
+                        if (delResponse.ok) successCount++;
+                    } catch (e) {
+                        console.error("删除任务失败:", task.id, e);
+                    }
+                }
+
+                showToast(`成功删除 ${successCount} 个任务`);
+                currentPage = 1;
+                refreshTasks();
+            }
+
+            function openNewTaskModal() {
+                document.getElementById("newTaskModal").classList.add("show");
+                document.getElementById("taskUrl").focus();
+            }
+
+            function closeNewTaskModal() {
+                document
+                    .getElementById("newTaskModal")
+                    .classList.remove("show");
+                document.getElementById("newTaskForm").reset();
+            }
+
+            async function submitNewTask(event) {
+                event.preventDefault();
+
+                const url = document.getElementById("taskUrl").value.trim();
+                const format = document.getElementById("taskFormat").value;
+                const outputPath =
+                    document.getElementById("taskOutput").value.trim() ||
+                    "./downloads";
+
+                if (!url) {
+                    showToast("请输入视频链接", "error");
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_BASE}/download`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            url: url,
+                            format: format,
+                            output_path: outputPath,
+                            quiet: true,
+                        }),
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.status === "success") {
+                        showToast("下载任务已创建");
+                        closeNewTaskModal();
+                        currentPage = 1;
+                        refreshTasks();
+                    } else {
+                        showToast(data.detail || "创建任务失败", "error");
+                    }
+                } catch (error) {
+                    showToast("创建任务失败: " + error.message, "error");
+                }
+            }
+
+            document
+                .getElementById("newTaskModal")
+                .addEventListener("click", (e) => {
+                    if (e.target === e.currentTarget) {
+                        closeNewTaskModal();
+                    }
+                });
+
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") {
+                    closeNewTaskModal();
+                }
+            });
+        </script>
+    </body>
+</html>

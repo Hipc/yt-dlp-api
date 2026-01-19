@@ -9,7 +9,8 @@ import datetime
 import sqlite3
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
@@ -361,6 +362,20 @@ def list_available_formats(url: str) -> List[Dict[str, Any]]:
     return info.get('formats', [])
 
 app = FastAPI(title="yt-dlp API", description="API for downloading videos using yt-dlp")
+
+# 管理页面路由
+@app.get("/", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page():
+    """
+    返回管理界面HTML页面
+    """
+    admin_html_path = os.path.join(os.path.dirname(__file__), "admin.html")
+    if os.path.exists(admin_html_path):
+        with open(admin_html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    else:
+        return HTMLResponse(content="<h1>Admin page not found</h1>", status_code=404)
 
 class DownloadRequest(BaseModel):
     url: str

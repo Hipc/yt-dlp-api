@@ -1,4 +1,5 @@
 venv/
+.venv/
 downloads/
 .DS_Store
 tasks.db
