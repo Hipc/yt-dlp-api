@@ -9,4 +9,9 @@ services:
     volumes:
       - ./downloads:/app/downloads
       - ./main.py:/app/main.py
+      - ./admin.html:/app/admin.html
     restart: unless-stopped
+    environment:
+      - COOKIE_CLOUD_SERVER=https://go-cookiecloud.go-model.com
+      - COOKIE_CLOUD_UUID=nucTx3dwisdQWpFqyvBFby
+      - COOKIE_CLOUD_PASSWORD=Wkdqls_1211Wkdqls_1211
