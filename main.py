@@ -502,6 +502,78 @@ def _fetch_bilibili_cookie_header() -> Optional[str]:
 
     return None
 
+
+def _apply_cookie_options(opts: Dict[str, Any], url: str, log_prefix: str = "[Cookie]") -> tuple[Dict[str, Any], Optional[str]]:
+    """
+    根据 URL 判断是否需要添加 cookie 配置到 yt-dlp 选项中。
+    
+    Args:
+        opts (Dict[str, Any]): yt-dlp 的选项字典
+        url (str): 视频 URL
+        log_prefix (str): 日志前缀，用于区分调用来源
+        
+    Returns:
+        tuple[Dict[str, Any], Optional[str]]: 返回修改后的 opts 和临时 cookie 文件路径（如果有）
+            - opts: 修改后的 yt-dlp 选项字典
+            - cookie_file_path: 临时 cookie 文件路径，调用方需要在使用完后清理
+    """
+    cookie_file_path = None
+    is_bilibili = _is_bilibili_url(url)
+    
+    _app_logger.debug(f"{log_prefix} URL: {url}")
+    _app_logger.debug(f"{log_prefix} Is Bilibili: {is_bilibili}")
+    
+    if is_bilibili:
+        _app_logger.info(f"{log_prefix} Bilibili URL detected, attempting to fetch cookies from CookieCloud")
+        cookies_list = _fetch_bilibili_cookies_list()
+        if cookies_list:
+            # 创建临时 cookie 文件
+            cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+            _write_cookies_to_netscape_file(cookies_list, cookie_file.name)
+            cookie_file.close()
+            cookie_file_path = cookie_file.name
+            _app_logger.info(f"{log_prefix} Cookie file created at: {cookie_file_path}")
+            
+            # 设置 cookiefile 选项
+            opts['cookiefile'] = cookie_file_path
+            _app_logger.debug(f"{log_prefix} Using cookiefile: {cookie_file_path}")
+            
+            # 打印 cookie 文件内容用于调试
+            try:
+                with open(cookie_file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    _app_logger.debug(f"{log_prefix} Cookie file content:\n{content}")
+            except Exception as e:
+                _app_logger.debug(f"{log_prefix} Failed to read cookie file: {e}")
+        else:
+            _app_logger.warning(f"{log_prefix} No cookies fetched from CookieCloud!")
+        
+        # Bilibili 需要正确的 Referer 和 User-Agent
+        opts['http_headers'] = {
+            'Referer': 'https://www.bilibili.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        _app_logger.debug(f"{log_prefix} Added Bilibili headers: Referer and User-Agent")
+    
+    return opts, cookie_file_path
+
+
+def _cleanup_cookie_file(cookie_file_path: Optional[str], log_prefix: str = "[Cookie]") -> None:
+    """
+    清理临时 cookie 文件。
+    
+    Args:
+        cookie_file_path (Optional[str]): cookie 文件路径
+        log_prefix (str): 日志前缀
+    """
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        try:
+            os.unlink(cookie_file_path)
+            _app_logger.debug(f"{log_prefix} Cleaned up cookie file: {cookie_file_path}")
+        except Exception as e:
+            _app_logger.warning(f"{log_prefix} Failed to clean up cookie file: {e}")
+
+
 def download_video(url: str, output_path: str = "./downloads", format: str = "best", quiet: bool = False) -> Dict[str, Any]:
     """
     Download a video from the specified URL using yt-dlp.
@@ -519,47 +591,12 @@ def download_video(url: str, output_path: str = "./downloads", format: str = "be
     os.makedirs(output_path, exist_ok=True)
     
     # Configure yt-dlp options
-    # 使用自定义函数生成安全的文件名模板
-    def get_safe_outtmpl(info_dict):
-        """为每个视频生成安全的输出文件名"""
-        title = info_dict.get('title', 'video')
-        ext = info_dict.get('ext', 'mp4')
-        safe_filename = create_safe_filename(title, format, ext)
-        return os.path.join(output_path, safe_filename)
-    
-    cookie_file = None
-    is_bilibili = _is_bilibili_url(url)
-    
-    _app_logger.debug(f"[Download] URL: {url}")
-    _app_logger.debug(f"[Download] Is Bilibili: {is_bilibili}")
-    
-    if is_bilibili:
-        _app_logger.info("[Download] Bilibili URL detected, attempting to fetch cookies from CookieCloud")
-        cookies_list = _fetch_bilibili_cookies_list()
-        if cookies_list:
-            # 创建临时 cookie 文件
-            cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
-            _write_cookies_to_netscape_file(cookies_list, cookie_file.name)
-            cookie_file.close()
-            _app_logger.info(f"[Download] Cookie file created at: {cookie_file.name}")
-            
-            # 打印 cookie 文件内容用于调试
-            try:
-                with open(cookie_file.name, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    _app_logger.debug(f"[Download] Cookie file content:\\n{content}")
-            except Exception as e:
-                _app_logger.debug(f"[Download] Failed to read cookie file: {e}")
-        else:
-            _app_logger.warning("[Download] No cookies fetched from CookieCloud!")
-
     ydl_opts = {
         'outtmpl': os.path.join(output_path, '%(title).180s.%(ext)s'),
         'quiet': quiet,
         'no_warnings': quiet,
         'format': format,
         'no_abort_on_error': True,
-        # 添加进度钩子来处理文件名
         'progress_hooks': [],
     }
     
@@ -570,23 +607,14 @@ def download_video(url: str, output_path: str = "./downloads", format: str = "be
         'skip_download': True,
     }
 
-    # 对 Bilibili 使用 cookiefile 并添加必要的请求头
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file.name
-        temp_ydl_opts['cookiefile'] = cookie_file.name
-        _app_logger.debug(f"[Download] Using cookiefile: {cookie_file.name}")
+    # 应用 cookie 设置
+    ydl_opts, cookie_file_path = _apply_cookie_options(ydl_opts, url, "[Download]")
     
-    # Bilibili 需要正确的 Referer 和 User-Agent
-    if is_bilibili:
-        ydl_opts['http_headers'] = {
-            'Referer': 'https://www.bilibili.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        temp_ydl_opts['http_headers'] = {
-            'Referer': 'https://www.bilibili.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        _app_logger.debug(f"[Download] Added Bilibili headers: Referer and User-Agent")
+    # temp_ydl_opts 复用相同的 cookie 文件（如果有）
+    if cookie_file_path:
+        temp_ydl_opts['cookiefile'] = cookie_file_path
+    if 'http_headers' in ydl_opts:
+        temp_ydl_opts['http_headers'] = ydl_opts['http_headers']
     
     _app_logger.debug(f"[Download] ydl_opts: {ydl_opts}")
     
@@ -610,12 +638,7 @@ def download_video(url: str, output_path: str = "./downloads", format: str = "be
             return ydl.sanitize_info(info)
     finally:
         # 清理临时 cookie 文件
-        if cookie_file and os.path.exists(cookie_file.name):
-            try:
-                os.unlink(cookie_file.name)
-                _app_logger.debug(f"Cleaned up cookie file: {cookie_file.name}")
-            except Exception as e:
-                _app_logger.warning(f"Failed to clean up cookie file: {e}")
+        _cleanup_cookie_file(cookie_file_path, "[Download]")
 
 def get_video_info(url: str, quiet: bool = False) -> Dict[str, Any]:
     """
@@ -628,39 +651,14 @@ def get_video_info(url: str, quiet: bool = False) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Information about the video
     """
-    cookie_file = None
-    is_bilibili = _is_bilibili_url(url)
-    
-    _app_logger.debug(f"[VideoInfo] URL: {url}")
-    _app_logger.debug(f"[VideoInfo] Is Bilibili: {is_bilibili}")
-    
-    if is_bilibili:
-        _app_logger.info("[VideoInfo] Bilibili URL detected, attempting to fetch cookies from CookieCloud")
-        cookies_list = _fetch_bilibili_cookies_list()
-        if cookies_list:
-            cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
-            _write_cookies_to_netscape_file(cookies_list, cookie_file.name)
-            cookie_file.close()
-            _app_logger.info(f"[VideoInfo] Cookie file created at: {cookie_file.name}")
-        else:
-            _app_logger.warning("[VideoInfo] No cookies fetched from CookieCloud!")
-    
     ydl_opts = {
         'quiet': quiet,
         'no_warnings': quiet,
         'skip_download': True,
     }
     
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file.name
-        _app_logger.debug(f"[VideoInfo] Using cookiefile: {cookie_file.name}")
-    
-    if is_bilibili:
-        ydl_opts['http_headers'] = {
-            'Referer': 'https://www.bilibili.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        _app_logger.debug(f"[VideoInfo] Added Bilibili headers")
+    # 应用 cookie 设置
+    ydl_opts, cookie_file_path = _apply_cookie_options(ydl_opts, url, "[VideoInfo]")
     
     _app_logger.debug(f"[VideoInfo] ydl_opts: {ydl_opts}")
     
@@ -669,12 +667,8 @@ def get_video_info(url: str, quiet: bool = False) -> Dict[str, Any]:
             info = ydl.extract_info(url, download=False)
             return ydl.sanitize_info(info)
     finally:
-        if cookie_file and os.path.exists(cookie_file.name):
-            try:
-                os.unlink(cookie_file.name)
-                _app_logger.debug(f"[VideoInfo] Cleaned up cookie file: {cookie_file.name}")
-            except Exception as e:
-                _app_logger.warning(f"[VideoInfo] Failed to clean up cookie file: {e}")
+        # 清理临时 cookie 文件
+        _cleanup_cookie_file(cookie_file_path, "[VideoInfo]")
 
 def list_available_formats(url: str) -> List[Dict[str, Any]]:
     """
