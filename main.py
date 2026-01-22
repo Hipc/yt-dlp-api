@@ -8,13 +8,15 @@ import tempfile
 import time
 
 import asyncio
+import boto3
+from botocore.exceptions import ClientError
 
 import json
 import datetime
 import sqlite3
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
@@ -88,6 +90,7 @@ class Task(BaseModel):
     status: str
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    s3_url: Optional[str] = None
 
 class State:
     def __init__(self):
@@ -113,9 +116,18 @@ class State:
             status TEXT NOT NULL,
             result TEXT,
             error TEXT,
+            s3_url TEXT,
             timestamp TEXT NOT NULL
         )
         ''')
+        
+        # 检查并添加s3_url列（用于数据库迁移）
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN s3_url TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            # 列已存在，忽略错误
+            pass
         
         conn.commit()
         conn.close()
@@ -126,11 +138,11 @@ class State:
             conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
             
-            cursor.execute("SELECT id, url, output_path, format, status, result, error FROM tasks")
+            cursor.execute("SELECT id, url, output_path, format, status, result, error, s3_url FROM tasks")
             rows = cursor.fetchall()
             
             for row in rows:
-                task_id, url, output_path, format, status, result_json, error = row
+                task_id, url, output_path, format, status, result_json, error, s3_url = row
                 
                 # 解析JSON结果（如果有）
                 result = json.loads(result_json) if result_json else None
@@ -143,7 +155,8 @@ class State:
                     format=format,
                     status=status,
                     result=result,
-                    error=error
+                    error=error,
+                    s3_url=s3_url
                 )
                 self.tasks[task_id] = task
                 
@@ -165,8 +178,8 @@ class State:
             
             # 使用REPLACE策略插入/更新任务
             cursor.execute('''
-            INSERT OR REPLACE INTO tasks (id, url, output_path, format, status, result, error, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO tasks (id, url, output_path, format, status, result, error, s3_url, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 task.id,
                 task.url,
@@ -175,6 +188,7 @@ class State:
                 task.status,
                 result_json,
                 task.error,
+                task.s3_url,
                 timestamp
             ))
             
@@ -202,7 +216,7 @@ class State:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
     
-    def update_task(self, task_id: str, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None, clear_fields: bool = False) -> None:
+    def update_task(self, task_id: str, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None, s3_url: Optional[str] = None, clear_fields: bool = False) -> None:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             task.status = status
@@ -210,6 +224,8 @@ class State:
                 task.result = result
             if error is not None or clear_fields:
                 task.error = error
+            if s3_url is not None or clear_fields:
+                task.s3_url = s3_url
             
             # 将更新后的任务状态保存到数据库
             self._save_task(task)
@@ -232,8 +248,18 @@ class State:
             return False, None, "Task not found"
         
         deleted_file = None
+        deleted_s3 = False
         
-        # 如果任务已完成，尝试删除对应的文件
+        # 如果有S3文件，尝试删除
+        if task.s3_url:
+            try:
+                deleted_s3 = delete_s3_file(task.s3_url)
+                if deleted_s3:
+                    _app_logger.info(f"[S3] Deleted S3 file for task {task_id}: {task.s3_url}")
+            except Exception as e:
+                _app_logger.error(f"[S3] Error deleting S3 file for task {task_id}: {e}")
+        
+        # 如果任务已完成且本地文件存在，尝试删除对应的本地文件
         if task.status == "completed" and task.result:
             try:
                 # 从结果中提取文件名
@@ -248,7 +274,7 @@ class State:
                         ext = task.result.get("ext", "mp4")
                         filename = os.path.join(task.output_path, f"{title}.{ext}")
                 
-                # 删除文件
+                # 删除本地文件
                 if filename and os.path.exists(filename):
                     os.remove(filename)
                     deleted_file = filename
@@ -282,6 +308,159 @@ def _get_cookie_cloud_config() -> Dict[str, Optional[str]]:
         "password": os.getenv("COOKIE_CLOUD_PASSWORD"),
         "uuid": os.getenv("COOKIE_CLOUD_UUID"),
     }
+
+
+def _get_s3_config() -> Dict[str, Optional[str]]:
+    """获取S3配置"""
+    return {
+        "endpoint_url": os.getenv("S3_ENDPOINT_URL"),  # 可选，用于兼容S3的服务（如MinIO）
+        "access_key": os.getenv("S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID"),
+        "secret_key": os.getenv("S3_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY"),
+        "bucket": os.getenv("S3_BUCKET"),
+        "region": os.getenv("S3_REGION") or os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+    }
+
+
+def _is_s3_configured() -> bool:
+    """检查S3是否已配置"""
+    cfg = _get_s3_config()
+    return bool(cfg.get("access_key") and cfg.get("secret_key") and cfg.get("bucket"))
+
+
+def _get_s3_client():
+    """获取S3客户端"""
+    cfg = _get_s3_config()
+    
+    client_kwargs = {
+        "aws_access_key_id": cfg.get("access_key"),
+        "aws_secret_access_key": cfg.get("secret_key"),
+        "region_name": cfg.get("region"),
+    }
+    
+    # 如果配置了自定义endpoint（如MinIO），则添加
+    if cfg.get("endpoint_url"):
+        client_kwargs["endpoint_url"] = cfg.get("endpoint_url")
+    
+    return boto3.client("s3", **client_kwargs)
+
+
+def upload_file_to_s3(file_path: str, task_id: str) -> Optional[str]:
+    """
+    上传文件到S3
+    
+    Args:
+        file_path (str): 本地文件路径
+        task_id (str): 任务ID
+        
+    Returns:
+        Optional[str]: S3 key路径，如果上传失败返回None
+    """
+    if not _is_s3_configured():
+        _app_logger.warning("[S3] S3 is not configured, skipping upload")
+        return None
+    
+    if not os.path.exists(file_path):
+        _app_logger.error(f"[S3] File not found: {file_path}")
+        return None
+    
+    cfg = _get_s3_config()
+    bucket = cfg.get("bucket")
+    
+    # 构建S3 key: yt-dlp/task_id/文件名
+    filename = os.path.basename(file_path)
+    s3_key = f"yt-dlp/{task_id}/{filename}"
+    
+    try:
+        s3_client = _get_s3_client()
+        
+        _app_logger.info(f"[S3] Uploading {file_path} to s3://{bucket}/{s3_key}")
+        
+        # 上传文件
+        s3_client.upload_file(file_path, bucket, s3_key)
+        
+        _app_logger.info(f"[S3] File uploaded successfully: s3://{bucket}/{s3_key}")
+        # 返回S3 key，而不是完整URL（因为需要预签名才能访问）
+        return s3_key
+        
+    except ClientError as e:
+        _app_logger.error(f"[S3] Failed to upload file: {e}")
+        return None
+    except Exception as e:
+        _app_logger.error(f"[S3] Unexpected error during upload: {e}")
+        return None
+
+
+def generate_presigned_url(s3_key: str, expiration: int = 3600) -> Optional[str]:
+    """
+    生成S3预签名URL
+    
+    Args:
+        s3_key (str): S3对象的key
+        expiration (int): URL过期时间（秒），默认1小时
+        
+    Returns:
+        Optional[str]: 预签名URL，如果生成失败返回None
+    """
+    if not _is_s3_configured():
+        return None
+    
+    cfg = _get_s3_config()
+    bucket = cfg.get("bucket")
+    print(f"key to generate presigned url: {s3_key} in bucket: {bucket}")
+    
+    try:
+        s3_client = _get_s3_client()
+        
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': s3_key},
+            ExpiresIn=expiration
+        )
+        
+        _app_logger.debug(f"[S3] Generated presigned URL for {s3_key}")
+        return presigned_url
+        
+    except ClientError as e:
+        _app_logger.error(f"[S3] Failed to generate presigned URL: {e}")
+        return None
+    except Exception as e:
+        _app_logger.error(f"[S3] Unexpected error generating presigned URL: {e}")
+        return None
+
+
+def delete_s3_file(s3_key: str) -> bool:
+    """
+    删除S3上的文件
+    
+    Args:
+        s3_key (str): S3对象的key
+        
+    Returns:
+        bool: 是否删除成功
+    """
+    if not _is_s3_configured():
+        return False
+    
+    if not s3_key:
+        return False
+    
+    cfg = _get_s3_config()
+    bucket = cfg.get("bucket")
+    
+    try:
+        s3_client = _get_s3_client()
+        
+        _app_logger.info(f"[S3] Deleting s3://{bucket}/{s3_key}")
+        s3_client.delete_object(Bucket=bucket, Key=s3_key)
+        _app_logger.info(f"[S3] File deleted successfully: s3://{bucket}/{s3_key}")
+        return True
+        
+    except ClientError as e:
+        _app_logger.error(f"[S3] Failed to delete file: {e}")
+        return False
+    except Exception as e:
+        _app_logger.error(f"[S3] Unexpected error deleting file: {e}")
+        return False
 
 def _is_bilibili_url(url: str) -> bool:
     try:
@@ -770,7 +949,44 @@ async def process_download_task(task_id: str, url: str, output_path: str, format
                     quiet=quiet,
                 )
             )
-        state.update_task(task_id, "completed", result=result)
+            
+            # 获取下载的文件路径
+            filename = result.get("requested_downloads", [{}])[0].get("filename")
+            if not filename:
+                filename = result.get("requested_filename")
+            if not filename:
+                title = result.get("title", "video")
+                ext = result.get("ext", "mp4")
+                filename = os.path.join(output_path, f"{title}.{ext}")
+            
+            # 检查是否配置了S3
+            if _is_s3_configured():
+                # 更新状态为 uploading
+                state.update_task(task_id, "uploading", result=result)
+                
+                s3_url = None
+                try:
+                    if filename and os.path.exists(filename):
+                        s3_url = await loop.run_in_executor(
+                            executor,
+                            lambda: upload_file_to_s3(filename, task_id)
+                        )
+                        
+                        # 上传成功后删除本地文件
+                        if s3_url:
+                            try:
+                                os.remove(filename)
+                                _app_logger.info(f"[S3] Local file deleted after upload: {filename}")
+                            except Exception as e:
+                                _app_logger.warning(f"[S3] Failed to delete local file {filename}: {e}")
+                except Exception as e:
+                    _app_logger.error(f"[S3] Error uploading file for task {task_id}: {e}")
+                
+                # 上传完成后变成 completed 状态
+                state.update_task(task_id, "completed", result=result, s3_url=s3_url)
+            else:
+                # S3未配置，直接变成 completed 状态
+                state.update_task(task_id, "completed", result=result)
     except Exception as e:
         state.update_task(task_id, "failed", error=str(e))
 
@@ -849,6 +1065,8 @@ async def get_task_status(task_id: str):
     
     if task.status == "completed" and task.result:
         response["data"]["result"] = task.result
+        if task.s3_url:
+            response["data"]["s3_url"] = task.s3_url
     elif task.status == "failed" and task.error:
         response["data"]["error"] = task.error
     
@@ -884,10 +1102,11 @@ async def api_list_formats(url: str = Query(..., description="The URL of the vid
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/download/{task_id}/file", response_class=FileResponse)
+@app.get("/download/{task_id}/file")
 async def download_completed_video(task_id: str):
     """
     返回已完成下载任务的视频文件。
+    如果文件已上传到S3，则生成预签名URL并重定向。
     如果任务未完成或未找到，将返回相应的错误。
     """
     task = state.get_task(task_id)
@@ -900,7 +1119,15 @@ async def download_completed_video(task_id: str):
     if not task.result:
         raise HTTPException(status_code=500, detail="Task completed but no result information available")
     
-    # 获取文件路径
+    # 如果有S3 key，生成预签名URL并重定向
+    if task.s3_url:
+        presigned_url = generate_presigned_url(task.s3_url, expiration=3600)  # 1小时有效期
+        if presigned_url:
+            return RedirectResponse(url=presigned_url, status_code=302)
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate download URL for S3 file")
+    
+    # 否则返回本地文件
     try:
         # 从结果中提取文件名和路径 tast.result.requested_downloads[0].filename
         filename = task.result.get("requested_downloads", [{}])[0].get("filename")
@@ -928,6 +1155,8 @@ async def download_completed_video(task_id: str):
             media_type="application/octet-stream"
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error accessing video file: {str(e)}")
 

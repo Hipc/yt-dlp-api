@@ -5,3 +5,5 @@ downloads/
 tasks.db
 __pycache__/
 .vscode/
+
+.env
