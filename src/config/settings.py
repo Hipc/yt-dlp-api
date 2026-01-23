@@ -31,3 +31,8 @@ def is_s3_configured() -> bool:
     """检查S3是否已配置"""
     cfg = get_s3_config()
     return bool(cfg.get("access_key") and cfg.get("secret_key") and cfg.get("bucket"))
+
+
+def get_domain() -> Optional[str]:
+    """获取服务域名配置"""
+    return os.getenv("DOMAIN")

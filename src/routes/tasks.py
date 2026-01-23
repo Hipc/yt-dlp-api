@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 
 from src.state import state
 from src.storage import generate_presigned_url
+from src.config.settings import get_domain
 
 router = APIRouter()
 
@@ -66,6 +67,56 @@ async def list_all_tasks():
     """
     tasks = state.list_tasks()
     return {"status": "success", "data": tasks}
+
+
+@router.get("/download/{task_id}/file_url", response_class=JSONResponse)
+async def get_download_url(task_id: str):
+    """
+    获取已完成下载任务的视频文件下载URL。
+    如果文件保存在S3，返回临时预签名URL。
+    如果文件保存在本地，返回本地下载地址。
+    """
+    task = state.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task with ID {task_id} not found")
+    
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail=f"Task is not completed yet. Current status: {task.status}")
+    
+    if not task.result:
+        raise HTTPException(status_code=500, detail="Task completed but no result information available")
+    
+    # 如果有S3 key，生成预签名URL
+    if task.s3_url:
+        presigned_url = generate_presigned_url(task.s3_url, expiration=3600)  # 1小时有效期
+        if presigned_url:
+            return {
+                "status": "success",
+                "data": {
+                    "url": presigned_url,
+                    "type": "s3",
+                    "expires_in": 3600
+                }
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate download URL for S3 file")
+    
+    # 本地文件，返回 DOMAIN + /download/{task_id}/file
+    domain = get_domain()
+    if not domain:
+        raise HTTPException(status_code=500, detail="DOMAIN not configured in environment")
+    
+    # 确保 domain 末尾没有斜杠
+    domain = domain.rstrip("/")
+    local_url = f"{domain}/download/{task_id}/file"
+    
+    return {
+        "status": "success",
+        "data": {
+            "url": local_url,
+            "type": "local"
+        }
+    }
 
 
 @router.get("/download/{task_id}/file")
